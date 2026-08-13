@@ -20,6 +20,11 @@ REQUIRED_ENV = {
     "LITELLM_VERTEX_INTERACTIONS_VIRTUAL_KEY": VIRTUAL_KEY,
     "LITELLM_VERTEX_INTERACTIONS_GCS_OUTPUT": GCS_OUTPUT,
     "LITELLM_VERTEX_INTERACTIONS_MP4_PATH": MP4_PATH,
+    "LITELLM_VERTEX_INTERACTIONS_RPM_LIMIT": os.getenv("LITELLM_VERTEX_INTERACTIONS_RPM_LIMIT"),
+    "LITELLM_VERTEX_INTERACTIONS_TPM_LIMIT": os.getenv("LITELLM_VERTEX_INTERACTIONS_TPM_LIMIT"),
+    "LITELLM_VERTEX_INTERACTIONS_MAX_PARALLEL_REQUESTS": os.getenv(
+        "LITELLM_VERTEX_INTERACTIONS_MAX_PARALLEL_REQUESTS"
+    ),
 }
 pytestmark = pytest.mark.skipif(
     any(not value for value in REQUIRED_ENV.values()),
@@ -108,6 +113,13 @@ def _key_spend(client: httpx.Client) -> float:
     return float(key_info.json()["info"]["spend"])
 
 
+def _key_rate_limits(client: httpx.Client) -> tuple[int | None, int | None, int | None]:
+    key_info = client.get("/key/info", params={"key": VIRTUAL_KEY})
+    key_info.raise_for_status()
+    info = key_info.json()["info"]
+    return info.get("rpm_limit"), info.get("tpm_limit"), info.get("max_parallel_requests")
+
+
 def _wait_for_spend(client: httpx.Client, expected: float) -> float:
     for _ in range(60):
         spend = _key_spend(client)
@@ -142,6 +154,11 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
     affinity_interaction_id = ""
     affinity_deployment_id = ""
     with httpx.Client(base_url=BASE_URL, headers=headers, timeout=900) as client:
+        assert _key_rate_limits(client) == (
+            int(os.environ["LITELLM_VERTEX_INTERACTIONS_RPM_LIMIT"]),
+            int(os.environ["LITELLM_VERTEX_INTERACTIONS_TPM_LIMIT"]),
+            int(os.environ["LITELLM_VERTEX_INTERACTIONS_MAX_PARALLEL_REQUESTS"]),
+        )
         baseline_spend = _key_spend(client)
         shape_payloads = (
             (

@@ -41,6 +41,7 @@ async def record_interaction_generation(
                         "user_id": metadata.get("user_api_key_user_id"),
                         "team_id": metadata.get("user_api_key_team_id"),
                         "org_id": metadata.get("user_api_key_org_id"),
+                        "project_id": metadata.get("user_api_key_project_id"),
                         "end_user_id": metadata.get("user_api_key_end_user_id"),
                     }
                 ),
@@ -77,6 +78,44 @@ def is_terminal_interaction(
     return getattr(response, "status", None) == "completed" or (
         getattr(response, "event_type", None) in {"interaction.completed", "interaction.complete"}
         and nested_status == "completed"
+    )
+
+
+async def _charge_terminal_tokens(snapshot: dict[str, Any], model: str, response: InteractionsAPIResponse) -> None:
+    from litellm.proxy.hooks.parallel_request_limiter_v3 import _PROXY_MaxParallelRequestsHandler_v3
+    from litellm.proxy.proxy_server import proxy_logging_obj
+
+    limiter = proxy_logging_obj.get_proxy_hook("parallel_request_limiter")
+    if not isinstance(limiter, _PROXY_MaxParallelRequestsHandler_v3):
+        return
+    usage = response.usage or {}
+    total = usage.get("total_tokens") or 0
+    input_tokens = usage.get("total_input_tokens") or 0
+    cached_tokens = usage.get("total_cached_tokens") or 0
+    rate_limit_type = limiter.get_rate_limit_type()
+    tokens = {
+        "input": max(0, input_tokens - cached_tokens),
+        "output": max(0, total - input_tokens),
+        "total": max(0, total - cached_tokens),
+    }[rate_limit_type]
+    if not tokens:
+        return
+    metadata = {
+        "user_api_key_hash": snapshot.get("api_key"),
+        "user_api_key_user_id": snapshot.get("user_id"),
+        "user_api_key_team_id": snapshot.get("team_id"),
+        "user_api_key_org_id": snapshot.get("org_id"),
+        "user_api_key_project_id": snapshot.get("project_id"),
+        "user_api_key_end_user_id": snapshot.get("end_user_id"),
+    }
+    targets = limiter._collect_tpm_scope_targets(metadata, {}, model)
+    await limiter.async_increment_tokens_with_ttl_preservation(
+        limiter._build_reservation_aware_tpm_ops(
+            targets=targets,
+            reserved_scopes=frozenset(),
+            actual_tokens=tokens,
+            reserved_tokens=0,
+        )
     )
 
 
@@ -122,6 +161,7 @@ async def settle_terminal_interaction_once(
                 "user_api_key_user_id": snapshot.get("user_id"),
                 "user_api_key_team_id": snapshot.get("team_id"),
                 "user_api_key_org_id": snapshot.get("org_id"),
+                "user_api_key_project_id": snapshot.get("project_id"),
                 "user_api_key_end_user_id": snapshot.get("end_user_id"),
                 "model_group": model,
                 "model_info": {"id": decoded_id["deployment_id"]},
@@ -151,6 +191,7 @@ async def settle_terminal_interaction_once(
         request_id=request_id,
     )
     if inserted:
+        await _charge_terminal_tokens(snapshot, model, response)
         await increment_spend_counters(
             token=payload.get("api_key") or None,
             team_id=payload.get("team_id") or None,

@@ -330,6 +330,7 @@ def create(
             optional_params=dict(optional_params),
             litellm_params={
                 "litellm_call_id": litellm_call_id,
+                "defer_interaction_settlement": kwargs.get("defer_interaction_settlement", False),
                 "metadata": kwargs.get("litellm_metadata") or kwargs.get("metadata") or {},
                 "litellm_metadata": kwargs.get("litellm_metadata") or {},
             },
@@ -463,6 +464,7 @@ def get(
             optional_params={"interaction_id": interaction_id},
             litellm_params={
                 "litellm_call_id": litellm_call_id,
+                "defer_interaction_settlement": kwargs.get("defer_interaction_settlement", False),
                 "metadata": kwargs.get("litellm_metadata") or kwargs.get("metadata") or {},
                 "litellm_metadata": kwargs.get("litellm_metadata") or {},
             },

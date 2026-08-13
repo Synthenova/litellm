@@ -2921,6 +2921,10 @@ class _PROXY_MaxParallelRequestsHandler_v3(CustomLogger):
         total_tokens = self._get_total_tokens_from_usage(usage=_usage, rate_limit_type=rate_limit_type)
         if total_tokens == 0:
             total_tokens = self._aggregate_only_total_tokens(usage=_usage)
+        if (kwargs.get("litellm_params") or {}).get("defer_interaction_settlement"):
+            # The durable terminal-interaction claim owns the one real token charge.
+            # Ordinary create/poll callbacks only release their admission reservation.
+            total_tokens = 0
 
         stash = get_request_stash_for_call(_call_id_from_callback_kwargs(kwargs))
         reserved_tokens = stash.reserved_tokens if stash is not None else 0
