@@ -20432,6 +20432,7 @@
         "max_output_tokens": 65535,
         "max_tokens": 65535,
         "mode": "chat",
+        "supports_native_streaming": false,
         "output_cost_per_reasoning_token": 9e-06,
         "output_cost_per_token": 9e-06,
         "output_cost_per_video_token": 1.75e-05,

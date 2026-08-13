@@ -291,6 +291,16 @@ def create(
             model=model,
         )
 
+        if custom_llm_provider == "vertex_ai" and stream:
+            raise litellm.BadRequestError(
+                message=(
+                    "Vertex AI Gemini Omni Interactions does not support live streaming. "
+                    "Use background=true and poll GET /v1beta/interactions/{interaction_id}."
+                ),
+                model=model,
+                llm_provider="vertex_ai",
+            )
+
         # Get optional params using utility (similar to responses API pattern)
         local_vars.update(kwargs)
         optional_params = InteractionsAPIRequestUtils.get_requested_interactions_api_optional_params(local_vars)
@@ -653,7 +663,14 @@ def cancel(
 
     try:
         if custom_llm_provider == "vertex_ai":
-            raise ValueError("Vertex AI Interactions does not document a cancel operation")
+            raise litellm.BadRequestError(
+                message=(
+                    "Vertex AI Gemini Omni Interactions does not support provider-side cancellation. "
+                    "Stopping client delivery does not stop generation or billing."
+                ),
+                model=None,
+                llm_provider="vertex_ai",
+            )
         litellm_logging_obj: LiteLLMLoggingObj = kwargs.get("litellm_logging_obj")  # type: ignore
         litellm_call_id: str | None = kwargs.get("litellm_call_id", None)
         _is_async = kwargs.pop("acancel_interaction", False) is True

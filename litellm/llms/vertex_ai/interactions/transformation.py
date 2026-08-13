@@ -52,8 +52,17 @@ class VertexAIInteractionsConfig(GoogleAIStudioInteractionsConfig, VertexBase):
         litellm_params: dict | None = None,
         stream: bool | None = None,
     ) -> str:
+        if stream:
+            raise litellm.BadRequestError(
+                message=(
+                    "Vertex AI Gemini Omni Interactions does not support live streaming. "
+                    "Use background=true and poll GET /v1beta/interactions/{interaction_id}."
+                ),
+                model=model,
+                llm_provider="vertex_ai",
+            )
         url = self._interactions_url(api_base, litellm_params or {})
-        return f"{url}?alt=sse" if stream else url
+        return url
 
     def transform_get_interaction_request(
         self,

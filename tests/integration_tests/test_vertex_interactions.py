@@ -266,4 +266,26 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
             json={"model": MODEL, "input": "Say hello.", "stream": True, "store": True},
         )
         assert stream.status_code == 400
-        assert "Omni does not support streaming" in stream.text
+        assert "does not support live streaming" in stream.text
+        assert "poll GET /v1beta/interactions/{interaction_id}" in stream.text
+
+        snapshot = client.get(
+            f"/v1beta/interactions/{affinity_interaction_id}",
+            params={"stream": "true"},
+        )
+        snapshot.raise_for_status()
+        assert snapshot.headers["x-litellm-model-id"] == affinity_deployment_id
+        assert tuple(line for line in snapshot.iter_lines() if line.startswith("data:"))
+
+        resume = client.get(
+            f"/v1beta/interactions/{affinity_interaction_id}",
+            params={"stream": "true", "last_event_id": "unsupported-cursor"},
+        )
+        assert resume.status_code == 400
+        assert "single SSE-formatted snapshot" in resume.text
+        assert "does not support last_event_id resume" in resume.text
+
+        cancel = client.post(f"/v1beta/interactions/{affinity_interaction_id}/cancel")
+        assert cancel.status_code == 400
+        assert "does not support provider-side cancellation" in cancel.text
+        assert "does not stop generation or billing" in cancel.text

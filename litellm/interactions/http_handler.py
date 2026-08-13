@@ -383,6 +383,15 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
         last_event_id: str | None = None,
     ) -> InteractionsAPIResponse | Coroutine[Any, Any, InteractionsAPIResponse]:
         """Get an interaction by ID."""
+        if custom_llm_provider == "vertex_ai" and last_event_id:
+            raise litellm.BadRequestError(
+                message=(
+                    "Vertex AI Gemini Omni streamed retrieval is a single SSE-formatted snapshot and does not "
+                    "support last_event_id resume. Poll GET /v1beta/interactions/{interaction_id} instead."
+                ),
+                model=None,
+                llm_provider="vertex_ai",
+            )
         if _is_async:
             return self.async_get_interaction(
                 interaction_id=interaction_id,

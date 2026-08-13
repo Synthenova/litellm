@@ -242,11 +242,10 @@ async def create_interaction(
     - Model: Provide `model` parameter (e.g., "gemini-2.5-flash")
     - Agent: Provide `agent` parameter (e.g., "deep-research-pro-preview-12-2025")
 
-    Streaming note: disconnecting or aborting an SSE request only stops the
-    client from receiving events. It does not cancel a background interaction,
-    which may continue running and incur provider charges. Use the provider's
-    cancel operation when supported; Vertex AI Interactions does not currently
-    document one.
+    Vertex AI Gemini Omni does not support live creation streaming. Use
+    `background=true`, retain the returned interaction ID, and poll
+    `GET /v1beta/interactions/{interaction_id}`. Vertex also has no provider-side
+    cancel operation: stopping client delivery does not stop generation or billing.
     
     Example:
     ```bash
@@ -373,9 +372,10 @@ async def get_interaction(
 
     Per OpenAPI spec: GET /{api_version}/interactions/{interaction_id}
 
-    Streaming note: closing a streamed retrieval is client-side only. The
-    provider interaction may continue running and billing, and the stream can
-    be resumed with `stream=true` and `last_event_id`.
+    Polling is the supported Vertex AI Gemini Omni progress mechanism. With
+    `stream=true`, Vertex returns one SSE-formatted snapshot rather than live
+    generation events. It emits no event cursor, so `last_event_id` resume is
+    rejected. Closing snapshot delivery does not stop generation or billing.
     """
     from litellm.proxy.proxy_server import (
         general_settings,
@@ -550,6 +550,10 @@ async def cancel_interaction(
     Cancel an interaction by ID.
 
     Per OpenAPI spec: POST /{api_version}/interactions/{interaction_id}:cancel
+
+    Vertex AI Gemini Omni does not implement provider-side cancellation. This
+    route returns 400 for Vertex interactions; stopping client delivery is not
+    cancellation and does not stop generation or billing.
     """
     from litellm.proxy.proxy_server import (
         general_settings,
