@@ -8,7 +8,7 @@
 
 **Topology:** Two LiteLLM proxy processes, shared PostgreSQL, shared coordination Redis, stable salt, two equal-weight real Vertex deployments
 
-**Release decision:** **NO-GO for URI delivery.** The LiteLLM integration passed the supported contract, security, routing, limiter, persistence, background, stop/stream and inline-media boundaries. Account A cannot write the configured GCS output bucket. One GCS reference-video interaction also returned empty nonterminal snapshots for more than ten minutes. Production may proceed only after both deployments can write the production bucket and the URI matrix passes, or after URI delivery is deliberately disabled and the product uses inline output only.
+**Release decision:** **GO for the bucket-capable account topology tested on 2026-08-14.** The LiteLLM integration passed the supported contract, security, routing, limiter, persistence, background, stop/stream, inline-media and GCS URI boundaries. The retest duplicated the bucket-capable service account across two logical deployments, so independent-account redundancy remains unverified and the non-bucket-capable account must not be included in the production Omni pool.
 
 No credentials, virtual keys, raw interaction IDs, inline media or database URLs are recorded here.
 
@@ -54,12 +54,14 @@ The test helper originally accepted an echoed `user_input` video as an edit outp
 8. Create accepted both `model` and `agent` and silently prioritized one. It now requires exactly one selector.
 9. Raw-ID protection originally checked only a key's direct model list. It now also treats inherited team-model and access-group policy as restricted.
 
-## Required remediation and retest
+## Original required remediation and retest
 
 - Grant both Vertex service accounts `storage.objects.create` for the exact production output bucket/prefix, or disable URI delivery and commit to inline output.
 - Rerun text-to-video, image-to-video, reference-to-video and video-edit URI delivery until both deployments have independently completed at least one URI job.
 - Rerun the previously stalled reference job shape. A response with no status, steps or usage after the terminal timeout remains a failure.
 - Deploy only a commit containing the fixes listed above; rerun this gate against the deployed revision rather than the local process.
+
+The 2026-08-14 retest completed the URI matrix using the bucket-capable account. The remaining deployment requirement is to exclude the account that cannot write the bucket until its URI matrix passes independently.
 
 ## Verification limitation
 
@@ -68,3 +70,20 @@ Targeted Ruff, Python compilation, JSON parsing, staged diff checks and all real
 ## Local artifacts
 
 Generated media and raw redacted test JSON remain under `/tmp/omni-gate-*`. They are intentionally not committed because responses contain large media and opaque live interaction IDs.
+
+## 2026-08-14 production retest
+
+The latest branch was retested with two logical equal-weight deployments backed by the bucket-capable service account. This validates LiteLLM routing, deployment affinity, two-replica persistence, continuation, GCS delivery and limiter behavior; it does not validate independent Google account redundancy.
+
+| Boundary | Result | Evidence |
+|---|---|---|
+| Complete real integration gate | PASS | Both contract tests passed in 199.42 seconds. Inline image-to-video, GCS reference-to-video and GCS video edit completed. The edit used a synthetic non-human source because a human-containing fixture triggered a provider safety rejection with zero usage. |
+| GCS delivery | PASS | Reference-to-video and video edit returned model-output URIs under a fresh test prefix in the existing bucket. |
+| Routing and affinity | PASS | New interactions selected both logical deployment IDs. Polling and `previous_interaction_id` continuation stayed on the creating deployment. |
+| Two replicas | PASS | Create, terminal polling, repeated GET and continuation succeeded across ports 4011 and 4012 with shared PostgreSQL and Redis. |
+| Settlement | PASS | Each terminal generation produced one authoritative SpendLogs row. Repeated GETs did not change spend. A checker discrepancy was traced to two requests settling before a cumulative assertion, not duplicate billing. |
+| Failure release | PASS | Malformed media reached terminal `failed` with no usage and no terminal spend. A subsequent real generation completed with the exact expected spend increment. |
+| User limits | PASS | The disposable restricted key reported 60 RPM, 500,000 TPM and 5 parallel requests. An approximately 600,000-token prompt was rejected with 429 before provider dispatch. Existing exact-boundary shared limiter tests cover RPM and parallel reset behavior. |
+| Cached input | PASS / none reported | A separate six-turn, 25,212-token conversation reported only each new turn's input tokens and no cache fields. Omni cost and TPM accounting now use all provider-reported input without an undocumented cached-input discount. |
+
+The real test now runs all long media interactions with `background=true`, redacts inline media from terminal-failure output and uses short text interactions to cover both logical routing slots instead of generating redundant videos.

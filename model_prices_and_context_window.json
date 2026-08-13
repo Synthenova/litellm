@@ -20517,7 +20517,6 @@
             "video"
         ],
         "input_cost_per_token": 0.0000015,
-        "cache_read_input_token_cost": 0.00000015,
         "output_cost_per_token": 0.000009,
         "output_cost_per_video_token": 0.0000175,
         "output_cost_per_video_per_second": 0.10,
@@ -20532,7 +20531,6 @@
     "gemini-omni-flash-preview": {
         "input_cost_per_audio_token": 1.5e-06,
         "input_cost_per_token": 1.5e-06,
-        "cache_read_input_token_cost": 1.5e-07,
         "litellm_provider": "vertex_ai-language-models",
         "max_input_tokens": 1048576,
         "max_output_tokens": 65535,

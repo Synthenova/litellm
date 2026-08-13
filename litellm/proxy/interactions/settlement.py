@@ -91,12 +91,11 @@ async def _charge_terminal_tokens(snapshot: dict[str, Any], model: str, response
     usage = response.usage or {}
     total = usage.get("total_tokens") or 0
     input_tokens = usage.get("total_input_tokens") or 0
-    cached_tokens = usage.get("total_cached_tokens") or 0
     rate_limit_type = limiter.get_rate_limit_type()
     tokens = {
-        "input": max(0, input_tokens - cached_tokens),
+        "input": input_tokens,
         "output": max(0, total - input_tokens),
-        "total": max(0, total - cached_tokens),
+        "total": total,
     }[rate_limit_type]
     if not tokens:
         return

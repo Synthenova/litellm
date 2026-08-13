@@ -10,7 +10,6 @@ def interactions_cost(response: InteractionsAPIResponse | InteractionsAPIStreami
     interaction = getattr(response, "interaction", None)
     usage = response.usage or (interaction.get("usage", {}) if isinstance(interaction, dict) else {})
     input_tokens = usage.get("total_input_tokens") or 0
-    cached_tokens = min(usage.get("total_cached_tokens") or 0, input_tokens)
     reasoning_tokens = (
         usage.get("total_reasoning_tokens") or usage.get("total_thought_tokens") or usage.get("thought_tokens") or 0
     )
@@ -25,8 +24,7 @@ def interactions_cost(response: InteractionsAPIResponse | InteractionsAPIStreami
         text_tokens = usage.get("total_output_tokens") or 0
     video_seconds = 0.0 if video_tokens else _find_video_duration(response.model_dump())
     return (
-        (input_tokens - cached_tokens) * pricing["input_cost_per_token"]
-        + cached_tokens * pricing["cache_read_input_token_cost"]
+        input_tokens * pricing["input_cost_per_token"]
         + (text_tokens + reasoning_tokens) * pricing["output_cost_per_token"]
         + video_tokens * pricing["output_cost_per_video_token"]
         + video_seconds * pricing["output_cost_per_video_per_second"]

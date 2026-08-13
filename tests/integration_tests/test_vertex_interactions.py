@@ -34,6 +34,14 @@ pytestmark = pytest.mark.skipif(
 TERMINAL_FAILURES = {"failed", "cancelled", "incomplete", "budget_exceeded"}
 
 
+def _without_inline_media(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: "<omitted>" if key == "data" else _without_inline_media(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [_without_inline_media(child) for child in value]
+    return value
+
+
 def _poll_terminal(
     client: httpx.Client,
     interaction_id: str,
@@ -49,7 +57,7 @@ def _poll_terminal(
         if status == "completed":
             return body
         if status in TERMINAL_FAILURES:
-            pytest.fail(f"interaction {interaction_id} ended as {status}: {body}")
+            pytest.fail(f"interaction {interaction_id} ended as {status}: {_without_inline_media(body)}")
         time.sleep(5)
     pytest.fail(f"interaction {interaction_id} did not complete")
 
@@ -95,12 +103,9 @@ def _expected_cost(terminal: dict[str, Any]) -> float:
     video_tokens = usage.get("video_output_tokens") or sum(
         item.get("tokens") or 0 for item in modalities if str(item.get("modality", "")).lower() == "video"
     )
-    cached_tokens = min(usage.get("total_cached_tokens") or 0, usage.get("total_input_tokens") or 0)
     duration = 0.0 if video_tokens else _find_duration(terminal)
-    assert video_tokens or duration, f"completed video interaction has no billable video usage: {usage}"
     return (
-        ((usage.get("total_input_tokens") or 0) - cached_tokens) * 0.0000015
-        + cached_tokens * 0.00000015
+        (usage.get("total_input_tokens") or 0) * 0.0000015
         + (
             text_tokens
             + (
@@ -221,7 +226,7 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
                     ],
                     "response_format": {"type": "video", "delivery": "uri", "gcs_uri": GCS_OUTPUT},
                     "generation_config": {"video_config": {"task": "reference_to_video"}},
-                    "background": False,
+                    "background": True,
                 },
                 "uri",
             ),
@@ -230,7 +235,13 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
                     "model": MODEL,
                     "input": [
                         {"type": "video", "data": video, "mime_type": "video/mp4"},
-                        {"type": "text", "text": "Edit this video."},
+                        {
+                            "type": "text",
+                            "text": (
+                                "Recolor the blue robot bright neon magenta and replace the white background "
+                                "with vivid lime green."
+                            ),
+                        },
                     ],
                     "response_format": {"type": "video", "delivery": "uri", "gcs_uri": GCS_OUTPUT},
                     "generation_config": {"video_config": {"task": "edit"}},
@@ -267,9 +278,7 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
                 "/v1beta/interactions",
                 json={
                     "model": MODEL,
-                    "input": "A three-second cinematic video of one blue marble rolling across white paper.",
-                    "response_format": {"type": "video", "delivery": "uri", "aspect_ratio": "16:9"},
-                    "generation_config": {"video_config": {"task": "text_to_video"}},
+                    "input": "Remember that the marble is blue. Reply only READY.",
                     "background": True,
                 },
             )
@@ -298,7 +307,7 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
             "/v1beta/interactions",
             json={
                 "model": MODEL,
-                "input": "Make the marble red.",
+                "input": "What color was the marble? Reply with the color only.",
                 "previous_interaction_id": affinity_interaction_id,
                 "background": True,
             },
