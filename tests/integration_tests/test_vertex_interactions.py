@@ -63,6 +63,15 @@ def _video_outputs(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _model_video_outputs(terminal: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        output
+        for step in terminal.get("steps") or []
+        if isinstance(step, dict) and step.get("type") == "model_output"
+        for output in _video_outputs(step.get("content") or [])
+    ]
+
+
 def _find_duration(value: Any) -> float:
     if isinstance(value, dict):
         for key in ("duration_seconds", "durationSeconds"):
@@ -135,6 +144,26 @@ def _assert_spend_stable(client: httpx.Client, expected: float) -> None:
     for _ in range(10):
         assert _key_spend(client) == pytest.approx(expected, abs=1e-12)
         time.sleep(1)
+
+
+def test_real_vertex_interactions_rejects_missing_model_or_agent() -> None:
+    response = httpx.post(
+        f"{BASE_URL}/v1beta/interactions",
+        headers={"Authorization": f"Bearer {VIRTUAL_KEY}"},
+        json={"input": "Hello"},
+        timeout=30,
+    )
+    assert response.status_code == 400
+    assert "model or agent" in response.text
+
+    both = httpx.post(
+        f"{BASE_URL}/v1beta/interactions",
+        headers={"Authorization": f"Bearer {VIRTUAL_KEY}"},
+        json={"model": MODEL, "agent": "agent-id", "input": "Hello"},
+        timeout=30,
+    )
+    assert both.status_code == 400
+    assert "model or agent" in both.text
 
 
 def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
@@ -220,7 +249,7 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
                 interaction_id,
                 shaped.headers["x-litellm-model-id"],
             )
-            outputs = _video_outputs(terminal.get("steps") or terminal.get("outputs") or [])
+            outputs = _model_video_outputs(terminal)
             assert outputs, f"completed {delivery} interaction returned no video output: {terminal}"
             if delivery == "inline":
                 assert any(isinstance(output.get("data"), str) and output["data"] for output in outputs)

@@ -13,6 +13,33 @@ router = APIRouter(
 )
 
 
+async def _authorize_managed_interaction(
+    interaction_id: str,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    from litellm.interactions.id_utils import decode_interaction_id
+    from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+    from litellm.proxy.auth.auth_checks import can_key_call_model
+    from litellm.proxy.interactions.settlement import get_interaction_attribution
+    from litellm.proxy.proxy_server import llm_model_list, llm_router
+
+    decoded = decode_interaction_id(interaction_id)
+    if decoded is None:
+        raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
+    attribution = await get_interaction_attribution(decoded)
+    if attribution is None:
+        raise HTTPException(status_code=404, detail="Interaction attribution not found")
+    if not can_access_resource(user_api_key_dict, attribution.get("user_id"), attribution.get("team_id")):
+        raise HTTPException(status_code=403, detail="Access denied to interaction")
+    if attribution.get("model"):
+        await can_key_call_model(
+            model=attribution["model"],
+            llm_model_list=llm_model_list,
+            valid_token=user_api_key_dict,
+            llm_router=llm_router,
+        )
+
+
 @router.post(
     "/v1beta/models/{model_name:path}:generateContent",
     dependencies=[Depends(user_api_key_auth)],
@@ -273,6 +300,8 @@ async def create_interaction(
     )
 
     data = await _read_request_body(request=request)
+    if bool(data.get("model")) == bool(data.get("agent")):
+        raise HTTPException(status_code=400, detail="Exactly one of model or agent is required")
     data["defer_interaction_settlement"] = True
     previous_interaction_id = data.get("previous_interaction_id")
     if isinstance(previous_interaction_id, str) and previous_interaction_id.startswith("int_"):
@@ -397,6 +426,11 @@ async def get_interaction(
     from litellm.proxy.auth.auth_checks import can_key_call_model
     from litellm.proxy.interactions.settlement import get_interaction_attribution
 
+    has_restricted_model_policy = bool(
+        user_api_key_dict.models or user_api_key_dict.team_models or user_api_key_dict.access_group_ids
+    )
+    if not interaction_id.startswith("int_") and has_restricted_model_policy:
+        raise HTTPException(status_code=400, detail="A LiteLLM-issued interaction ID is required")
     decoded = decode_interaction_id(interaction_id) if interaction_id.startswith("int_") else None
     if interaction_id.startswith("int_") and decoded is None:
         raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
@@ -417,7 +451,7 @@ async def get_interaction(
     data = {
         "interaction_id": interaction_id,
         "model": attribution.get("model") if attribution else None,
-        "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
+        "custom_llm_provider": "vertex_ai" if decoded else "gemini",
         "stream": request.query_params.get("stream") == "true",
         "last_event_id": request.query_params.get("last_event_id"),
         "defer_interaction_settlement": True,
@@ -446,6 +480,7 @@ async def get_interaction(
         if decoded and isinstance(response, InteractionsAPIResponse):
             from litellm.proxy.interactions.settlement import observe_interaction_generation
 
+            response.id = interaction_id
             await observe_interaction_generation(response)
         return response
     except Exception as e:
@@ -493,6 +528,10 @@ async def delete_interaction(
         user_temperature,
         version,
     )
+
+    if interaction_id.startswith("int_"):
+        await _authorize_managed_interaction(interaction_id, user_api_key_dict)
+        raise HTTPException(status_code=400, detail="Vertex AI Interactions does not support provider-side deletion")
 
     data = {
         "interaction_id": interaction_id,
@@ -568,6 +607,16 @@ async def cancel_interaction(
         user_temperature,
         version,
     )
+
+    if interaction_id.startswith("int_"):
+        await _authorize_managed_interaction(interaction_id, user_api_key_dict)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Vertex AI Gemini Omni Interactions does not support provider-side cancellation; "
+                "stopping client delivery does not stop generation or billing"
+            ),
+        )
 
     data = {
         "interaction_id": interaction_id,
