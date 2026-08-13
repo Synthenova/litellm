@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Any
 
 from litellm.interactions.id_utils import InteractionId
@@ -22,9 +22,7 @@ async def record_interaction_generation(
         return
     upstream_id = decoded_id["upstream_id"]
     interaction = getattr(response, "interaction", None)
-    status = getattr(response, "status", None) or (
-        interaction.get("status") if isinstance(interaction, dict) else None
-    )
+    status = getattr(response, "status", None) or (interaction.get("status") if isinstance(interaction, dict) else None)
     unified_id = getattr(response, "id", None) or getattr(response, "interaction_id", None)
     if not unified_id and isinstance(interaction, dict):
         unified_id = interaction.get("id") or interaction.get("interaction_id")
@@ -87,7 +85,13 @@ async def settle_terminal_interaction_once(
     decoded_id: InteractionId,
 ) -> bool:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
-    from litellm.proxy.proxy_server import prisma_client
+    from litellm.proxy.proxy_server import (
+        increment_spend_counters,
+        prisma_client,
+        proxy_logging_obj,
+        update_cache,
+    )
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
 
     if not is_terminal_interaction(response) or prisma_client is None:
         return False
@@ -99,17 +103,6 @@ async def settle_terminal_interaction_once(
     snapshot = json.loads(row.file_object) if isinstance(row.file_object, str) else row.file_object
     request_id = f"interaction:{decoded_id['deployment_id']}:{decoded_id['upstream_id']}"
     now = datetime.now(timezone.utc)
-    lease_cutoff = now - timedelta(minutes=2)
-    claimed = await prisma_client.db.litellm_managedobjecttable.update_many(
-        where={
-            "id": row.id,
-            "batch_processed": False,
-            "OR": [{"status": {"not": "settling"}}, {"updated_at": {"lt": lease_cutoff}}],
-        },
-        data={"status": "settling"},
-    )
-    if claimed != 1:
-        return False
 
     model = snapshot.get("model") or getattr(response, "model", None) or ""
     logging_obj = LiteLLMLogging(
@@ -137,19 +130,46 @@ async def settle_terminal_interaction_once(
         optional_params={},
     )
     response._hidden_params["settle_interaction_cost"] = True
-    try:
-        await logging_obj.async_success_handler(result=response, start_time=row.created_at, end_time=now)
-    except Exception:
-        await prisma_client.db.litellm_managedobjecttable.update_many(
-            where={"id": row.id, "batch_processed": False, "status": "settling"},
-            data={"status": "completed"},
+    start_time, end_time, response = logging_obj._success_handler_helper_fn(
+        result=response,
+        start_time=row.created_at,
+        end_time=now,
+        cache_hit=False,
+    )
+    payload = get_logging_payload(
+        kwargs=logging_obj.model_call_details,
+        response_obj=response,
+        start_time=start_time,
+        end_time=end_time,
+    )
+    payload["spend"] = float(logging_obj.model_call_details.get("response_cost") or 0.0)
+    inserted = await proxy_logging_obj.db_spend_update_writer.insert_spend_log_and_increment_counters_once(
+        prisma_client=prisma_client,
+        payload=payload,
+        request_id=request_id,
+    )
+    if inserted:
+        await increment_spend_counters(
+            token=payload.get("api_key") or None,
+            team_id=payload.get("team_id") or None,
+            user_id=payload.get("user") or None,
+            response_cost=payload["spend"],
+            org_id=payload.get("organization_id") or None,
+            end_user_id=payload.get("end_user") or None,
         )
-        raise
+        await update_cache(
+            token=payload.get("api_key") or None,
+            user_id=payload.get("user") or None,
+            end_user_id=payload.get("end_user") or None,
+            team_id=payload.get("team_id") or None,
+            response_cost=payload["spend"],
+            parent_otel_span=None,
+        )
     await prisma_client.db.litellm_managedobjecttable.update_many(
-        where={"id": row.id, "batch_processed": False, "status": "settling"},
+        where={"id": row.id, "batch_processed": False},
         data={"batch_processed": True, "status": "completed"},
     )
-    return True
+    return inserted
 
 
 async def observe_interaction_generation(

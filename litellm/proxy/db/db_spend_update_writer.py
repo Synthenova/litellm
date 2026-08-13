@@ -27,6 +27,7 @@ from litellm.caching import RedisCache
 from litellm.constants import (
     DB_DAILY_TAG_SPEND_UPDATE_JOB_NAME,
     DB_SPEND_UPDATE_JOB_NAME,
+    LITELLM_PROXY_BUDGET_NAME,
 )
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.proxy._types import (
@@ -116,6 +117,85 @@ class DBSpendUpdateWriter:
         self.daily_agent_spend_update_queue = DailySpendUpdateQueue()
         self.daily_org_spend_update_queue = DailySpendUpdateQueue()
         self.daily_tag_spend_update_queue = DailySpendUpdateQueue()
+
+    async def insert_spend_log_and_increment_counters_once(
+        self,
+        prisma_client: PrismaClient,
+        payload: SpendLogsPayload,
+        request_id: str,
+    ) -> bool:
+        """Atomically persist one spend log and its authoritative spend counters."""
+        from litellm.proxy.utils import jsonify_object
+
+        payload = copy.deepcopy(payload)
+        payload["request_id"] = request_id
+        response_cost = float(payload.get("spend") or 0.0)
+        api_key = payload.get("api_key") or None
+        user_id = payload.get("user") or None
+        team_id = payload.get("team_id") or None
+        org_id = payload.get("organization_id") or None
+        end_user_id = payload.get("end_user") or None
+
+        async with prisma_client.tx() as transaction:
+            inserted = await transaction.litellm_spendlogs.create_many(
+                data=[jsonify_object(payload)],
+                skip_duplicates=True,
+            )
+            if inserted == 0:
+                return False
+
+            if api_key is not None:
+                await transaction.litellm_verificationtoken.update_many(
+                    where={"token": api_key},
+                    data={
+                        "spend": {"increment": response_cost},
+                        "last_active": datetime.now(timezone.utc),
+                    },
+                )
+
+            user_ids = {user_id}
+            if litellm.max_budget and litellm.max_budget > 0:
+                user_ids.add(LITELLM_PROXY_BUDGET_NAME)
+            for current_user_id in sorted(value for value in user_ids if value is not None):
+                await transaction.litellm_usertable.update_many(
+                    where={"user_id": current_user_id},
+                    data={"spend": {"increment": response_cost}},
+                )
+
+            if team_id is not None:
+                await transaction.litellm_teamtable.update_many(
+                    where={"team_id": team_id},
+                    data={"spend": {"increment": response_cost}},
+                )
+                if user_id is not None:
+                    await transaction.litellm_teammembership.update_many(
+                        where={"team_id": team_id, "user_id": user_id},
+                        data={
+                            "spend": {"increment": response_cost},
+                            "total_spend": {"increment": response_cost},
+                        },
+                    )
+
+            if org_id is not None:
+                await transaction.litellm_organizationtable.update_many(
+                    where={"organization_id": org_id},
+                    data={"spend": {"increment": response_cost}},
+                )
+
+            if end_user_id is not None:
+                await transaction.litellm_endusertable.upsert(
+                    where={"user_id": end_user_id},
+                    data={
+                        "create": {
+                            "user_id": end_user_id,
+                            "spend": response_cost,
+                            "blocked": False,
+                        },
+                        "update": {"spend": {"increment": response_cost}},
+                    },
+                )
+
+        return True
 
     async def update_database(
         # LiteLLM management object fields
