@@ -21,11 +21,18 @@ async def record_interaction_generation(
     if prisma_client is None:
         return
     upstream_id = decoded_id["upstream_id"]
+    interaction = getattr(response, "interaction", None)
+    status = getattr(response, "status", None) or (
+        interaction.get("status") if isinstance(interaction, dict) else None
+    )
+    unified_id = getattr(response, "id", None) or getattr(response, "interaction_id", None)
+    if not unified_id and isinstance(interaction, dict):
+        unified_id = interaction.get("id") or interaction.get("interaction_id")
     await ManagedObjectRepository(prisma_client).table.upsert(
         where={"model_object_id": _interaction_row_id(upstream_id, decoded_id["deployment_id"])},
         data={
             "create": {
-                "unified_object_id": response.id,
+                "unified_object_id": unified_id or upstream_id,
                 "model_object_id": _interaction_row_id(upstream_id, decoded_id["deployment_id"]),
                 "file_object": json.dumps(
                     {
@@ -40,14 +47,25 @@ async def record_interaction_generation(
                     }
                 ),
                 "file_purpose": "interaction",
-                "status": response.status,
+                "status": status,
                 "batch_processed": False,
                 "created_by": decoded_id["user_id"] or None,
                 "team_id": decoded_id["team_id"] or None,
                 "updated_by": decoded_id["user_id"] or None,
             },
-            "update": {"status": response.status},
+            "update": {"status": status},
         },
+    )
+
+
+def is_terminal_interaction(
+    response: InteractionsAPIResponse | InteractionsAPIStreamingResponse,
+) -> bool:
+    interaction = getattr(response, "interaction", None)
+    nested_status = interaction.get("status") if isinstance(interaction, dict) else None
+    return getattr(response, "status", None) == "completed" or (
+        getattr(response, "event_type", None) in {"interaction.completed", "interaction.complete"}
+        and nested_status == "completed"
     )
 
 
@@ -55,11 +73,10 @@ async def settle_terminal_interaction_once(
     response: InteractionsAPIResponse | InteractionsAPIStreamingResponse,
     decoded_id: InteractionId,
 ) -> bool:
-    from litellm.interactions.cost_calculator import interactions_cost
-    from litellm.proxy.proxy_server import increment_spend_counters, prisma_client
-    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+    from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
+    from litellm.proxy.proxy_server import prisma_client
 
-    if response.status != "completed" or prisma_client is None:
+    if not is_terminal_interaction(response) or prisma_client is None:
         return False
     row = await prisma_client.db.litellm_managedobjecttable.find_first(
         where={"model_object_id": _interaction_row_id(decoded_id["upstream_id"], decoded_id["deployment_id"])}
@@ -68,73 +85,58 @@ async def settle_terminal_interaction_once(
         return False
     snapshot = json.loads(row.file_object) if isinstance(row.file_object, str) else row.file_object
     request_id = f"interaction:{decoded_id['deployment_id']}:{decoded_id['upstream_id']}"
-    cost = interactions_cost(response)
     now = datetime.now(timezone.utc)
-    response._hidden_params["settle_interaction_cost"] = True
-    payload = get_logging_payload(
-        kwargs={
-            "litellm_call_id": request_id,
-            "call_type": "acreate_interaction",
+    claimed = await prisma_client.db.litellm_managedobjecttable.update_many(
+        where={"id": row.id, "batch_processed": False},
+        data={"batch_processed": True, "status": "completed"},
+    )
+    if claimed != 1:
+        return False
+
+    model = snapshot.get("model") or getattr(response, "model", None) or ""
+    logging_obj = LiteLLMLogging(
+        model=model,
+        messages=[{"role": "user", "content": "<interaction>"}],
+        stream=False,
+        call_type="acreate_interaction",
+        start_time=row.created_at,
+        litellm_call_id=request_id,
+        function_id=request_id,
+    )
+    logging_obj.update_environment_variables(
+        litellm_params={
             "custom_llm_provider": "vertex_ai",
-            "model": snapshot.get("model") or response.model or "",
-            "response_cost": cost,
-            "litellm_params": {
-                "metadata": {
-                    "user_api_key": snapshot.get("api_key"),
-                    "user_api_key_user_id": snapshot.get("user_id"),
-                    "user_api_key_team_id": snapshot.get("team_id"),
-                    "user_api_key_org_id": snapshot.get("org_id"),
-                    "model_group": snapshot.get("model"),
-                    "model_info": {"id": decoded_id["deployment_id"]},
-                }
+            "metadata": {
+                "user_api_key": snapshot.get("api_key"),
+                "user_api_key_user_id": snapshot.get("user_id"),
+                "user_api_key_team_id": snapshot.get("team_id"),
+                "user_api_key_org_id": snapshot.get("org_id"),
+                "user_api_key_end_user_id": snapshot.get("end_user_id"),
+                "model_group": model,
+                "model_info": {"id": decoded_id["deployment_id"]},
             },
         },
-        response_obj=response,
-        start_time=row.created_at,
-        end_time=now,
+        optional_params={},
     )
-    payload["spend"] = cost
-    async with prisma_client.db.tx(timeout=60) as transaction:
-        claimed = await transaction.litellm_managedobjecttable.update_many(
-            where={"id": row.id, "batch_processed": False},
-            data={"batch_processed": True, "status": "completed", "file_object": response.model_dump_json()},
-        )
-        if claimed != 1:
-            return False
-        await transaction.litellm_spendlogs.create(data=prisma_client.jsonify_object(payload))
-        if snapshot.get("api_key"):
-            await transaction.litellm_verificationtoken.update_many(
-                where={"token": snapshot["api_key"]},
-                data={"spend": {"increment": cost}, "last_active": now},
-            )
-        if snapshot.get("user_id"):
-            await transaction.litellm_usertable.update_many(
-                where={"user_id": snapshot["user_id"]}, data={"spend": {"increment": cost}}
-            )
-        if snapshot.get("team_id"):
-            await transaction.litellm_teamtable.update_many(
-                where={"team_id": snapshot["team_id"]}, data={"spend": {"increment": cost}}
-            )
-        if snapshot.get("user_id") and snapshot.get("team_id"):
-            await transaction.litellm_teammembership.update_many(
-                where={"user_id": snapshot["user_id"], "team_id": snapshot["team_id"]},
-                data={"spend": {"increment": cost}, "total_spend": {"increment": cost}},
-            )
-        if snapshot.get("org_id"):
-            await transaction.litellm_organizationtable.update_many(
-                where={"organization_id": snapshot["org_id"]}, data={"spend": {"increment": cost}}
-            )
-        if snapshot.get("end_user_id"):
-            await transaction.litellm_endusertable.update_many(
-                where={"user_id": snapshot["end_user_id"]}, data={"spend": {"increment": cost}}
-            )
-    await increment_spend_counters(
-        token=snapshot.get("api_key"),
-        team_id=snapshot.get("team_id"),
-        user_id=snapshot.get("user_id"),
-        response_cost=cost,
-        org_id=snapshot.get("org_id"),
-        end_user_id=snapshot.get("end_user_id"),
-        tags=None,
-    )
+    response._hidden_params["settle_interaction_cost"] = True
+    await logging_obj.async_success_handler(result=response, start_time=row.created_at, end_time=now)
     return True
+
+
+async def observe_interaction_generation(
+    response: InteractionsAPIResponse | InteractionsAPIStreamingResponse,
+    metadata: dict[str, Any] | None = None,
+) -> bool:
+    """Persist attribution when first observed and settle the same generation at terminal."""
+    from litellm.interactions.id_utils import decode_interaction_id
+
+    interaction = getattr(response, "interaction", None)
+    unified_id = getattr(response, "id", None) or getattr(response, "interaction_id", None)
+    if not unified_id and isinstance(interaction, dict):
+        unified_id = interaction.get("id") or interaction.get("interaction_id")
+    decoded = decode_interaction_id(unified_id) if isinstance(unified_id, str) else None
+    if decoded is None:
+        return False
+    if metadata is not None:
+        await record_interaction_generation(response, decoded, metadata)
+    return await settle_terminal_interaction_once(response, decoded)

@@ -1,6 +1,3 @@
-import base64
-import hashlib
-import hmac
 import json
 from typing import Any, TypedDict
 
@@ -23,33 +20,26 @@ def encode_interaction_id(
     user_id: str = "",
     team_id: str = "",
 ) -> str:
-    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
 
     payload = json.dumps(
         {"v": 2, "d": deployment_id, "u": upstream_id, "m": model, "i": user_id, "t": team_id},
         separators=(",", ":"),
-    ).encode()
-    key = _get_salt_key()
-    if not isinstance(key, str) or not key:
+    )
+    encrypted = encrypt_value_helper(payload)
+    if not isinstance(encrypted, str) or not encrypted:
         raise ValueError("LITELLM_SALT_KEY or master_key is required to issue interaction IDs")
-    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
-    signature = base64.urlsafe_b64encode(hmac.new(key.encode(), payload, hashlib.sha256).digest()).decode().rstrip("=")
-    return f"int_{encoded}.{signature}"
+    return f"int_{encrypted}"
 
 
 def decode_interaction_id(interaction_id: str | None) -> InteractionId | None:
     if not interaction_id or not interaction_id.startswith("int_"):
         return None
-    from litellm.proxy.common_utils.encrypt_decrypt_utils import _get_salt_key
+    from litellm.proxy.common_utils.encrypt_decrypt_utils import decrypt_value_helper
 
     try:
-        encoded, signature = interaction_id[4:].split(".", 1)
-        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
-        key = _get_salt_key()
-        if not isinstance(key, str) or not key:
-            return None
-        expected = base64.urlsafe_b64encode(hmac.new(key.encode(), raw, hashlib.sha256).digest()).decode().rstrip("=")
-        if not hmac.compare_digest(signature, expected):
+        raw = decrypt_value_helper(interaction_id[4:], key="interaction_id")
+        if not isinstance(raw, str):
             return None
         payload = json.loads(raw)
         if (

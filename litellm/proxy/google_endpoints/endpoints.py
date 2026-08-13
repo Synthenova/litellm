@@ -315,16 +315,12 @@ async def create_interaction(
         )
         if isinstance(response, InteractionsAPIResponse) and response.id.startswith("int_"):
             from litellm.interactions.id_utils import decode_interaction_id
-            from litellm.proxy.interactions.settlement import (
-                record_interaction_generation,
-                settle_terminal_interaction_once,
-            )
+            from litellm.proxy.interactions.settlement import observe_interaction_generation
 
             decoded = decode_interaction_id(response.id)
             if decoded:
                 metadata = processor.data.get("litellm_metadata") or processor.data.get("metadata") or {}
-                await record_interaction_generation(response, decoded, metadata)
-                await settle_terminal_interaction_once(response, decoded)
+                await observe_interaction_generation(response, metadata)
         return response
     except Exception as e:
         raise await processor._handle_llm_api_exception(
@@ -409,12 +405,10 @@ async def get_interaction(
             user_api_base=user_api_base,
             version=version,
         )
-        if decoded and hasattr(response, "__aiter__"):
-            return _settling_interaction_stream(response, decoded)
         if decoded and isinstance(response, InteractionsAPIResponse):
-            from litellm.proxy.interactions.settlement import settle_terminal_interaction_once
+            from litellm.proxy.interactions.settlement import observe_interaction_generation
 
-            await settle_terminal_interaction_once(response, decoded)
+            await observe_interaction_generation(response)
         return response
     except Exception as e:
         raise await processor._handle_llm_api_exception(
@@ -423,14 +417,6 @@ async def get_interaction(
             proxy_logging_obj=proxy_logging_obj,
             version=version,
         )
-
-
-async def _settling_interaction_stream(response, decoded):
-    from litellm.proxy.interactions.settlement import settle_terminal_interaction_once
-
-    async for event in response:
-        await settle_terminal_interaction_once(event, decoded)
-        yield event
 
 
 @router.delete(
