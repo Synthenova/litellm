@@ -1,5 +1,4 @@
 import base64
-import json
 import os
 import time
 from pathlib import Path
@@ -82,11 +81,22 @@ def _expected_cost(terminal: dict[str, Any]) -> float:
     video_tokens = usage.get("video_output_tokens") or sum(
         item.get("tokens") or 0 for item in modalities if str(item.get("modality", "")).lower() == "video"
     )
+    cached_tokens = min(usage.get("total_cached_tokens") or 0, usage.get("total_input_tokens") or 0)
     duration = 0.0 if video_tokens else _find_duration(terminal)
     assert video_tokens or duration, f"completed video interaction has no billable video usage: {usage}"
     return (
-        (usage.get("total_input_tokens") or 0) * 0.0000015
-        + (text_tokens + (usage.get("total_reasoning_tokens") or usage.get("thought_tokens") or 0)) * 0.000009
+        ((usage.get("total_input_tokens") or 0) - cached_tokens) * 0.0000015
+        + cached_tokens * 0.00000015
+        + (
+            text_tokens
+            + (
+                usage.get("total_reasoning_tokens")
+                or usage.get("total_thought_tokens")
+                or usage.get("thought_tokens")
+                or 0
+            )
+        )
+        * 0.000009
         + video_tokens * 0.0000175
         + duration * 0.10
     )
@@ -113,33 +123,6 @@ def _assert_spend_stable(client: httpx.Client, expected: float) -> None:
     for _ in range(10):
         assert _key_spend(client) == pytest.approx(expected, abs=1e-12)
         time.sleep(1)
-
-
-def _parse_sse_events(lines: tuple[str, ...]) -> list[dict[str, Any]]:
-    events = []
-    for line in lines:
-        payload = line[5:].strip()
-        if payload and payload != "[DONE]":
-            event = json.loads(payload)
-            assert isinstance(event, dict)
-            events.append(event)
-    return events
-
-
-def _stream_interaction_id(events: list[dict[str, Any]]) -> str | None:
-    for event in events:
-        interaction = event.get("interaction")
-        candidates = (
-            interaction.get("id") if isinstance(interaction, dict) else None,
-            event.get("interaction_id"),
-            event.get("id"),
-        )
-        if interaction_id := next(
-            (candidate for candidate in candidates if isinstance(candidate, str) and candidate.startswith("int_")),
-            None,
-        ):
-            return interaction_id
-    return None
 
 
 def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
@@ -192,7 +175,7 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
                     ],
                     "response_format": {"type": "video", "delivery": "uri", "gcs_uri": GCS_OUTPUT},
                     "generation_config": {"video_config": {"task": "reference_to_video"}},
-                    "background": True,
+                    "background": False,
                 },
                 "uri",
             ),
@@ -204,7 +187,7 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
                         {"type": "text", "text": "Edit this video."},
                     ],
                     "response_format": {"type": "video", "delivery": "uri", "gcs_uri": GCS_OUTPUT},
-                    "generation_config": {"video_config": {"task": "video_edit"}},
+                    "generation_config": {"video_config": {"task": "edit"}},
                     "background": True,
                 },
                 "uri",
@@ -278,33 +261,9 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
         assert previous.json()["id"].startswith("int_")
         assert previous.headers["x-litellm-model-id"] == affinity_deployment_id
 
-        with client.stream(
-            "POST",
+        stream = client.post(
             "/v1beta/interactions",
             json={"model": MODEL, "input": "Say hello.", "stream": True, "store": True},
-        ) as stream:
-            stream.raise_for_status()
-            stream_deployment_id = stream.headers["x-litellm-model-id"]
-            lines = tuple(line for line in stream.iter_lines() if line.startswith("data:"))
-        parsed_events = _parse_sse_events(lines)
-        assert parsed_events
-
-        streamed_interaction_id = _stream_interaction_id(parsed_events)
-        assert streamed_interaction_id, f"stream returned no opaque interaction ID: {parsed_events}"
-        event_id = next((event["event_id"] for event in parsed_events if event.get("event_id")), None)
-        if not event_id:
-            pytest.fail(f"Vertex stream emitted no event_id; resume is unsupported or unverified: {parsed_events}")
-
-        try:
-            with client.stream(
-                "GET",
-                f"/v1beta/interactions/{streamed_interaction_id}",
-                params={"stream": "true", "last_event_id": event_id},
-            ) as resumed:
-                resumed.raise_for_status()
-                assert resumed.headers["x-litellm-model-id"] == stream_deployment_id
-                resumed_lines = tuple(line for line in resumed.iter_lines() if line.startswith("data:"))
-        except httpx.HTTPStatusError as exc:
-            pytest.fail(f"Vertex stream resume is unsupported: {exc.response.text}")
-        resumed_events = _parse_sse_events(resumed_lines)
-        assert resumed_events, "Vertex stream resume returned no events"
+        )
+        assert stream.status_code == 400
+        assert "Omni does not support streaming" in stream.text

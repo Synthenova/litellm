@@ -576,6 +576,7 @@ class AsyncHTTPHandler:
         headers: dict | None = None,
         follow_redirects: bool | None = None,
         timeout: float | httpx.Timeout | None = None,
+        stream: bool = False,
     ):
         # Set follow_redirects to UseClientDefault if None
         _follow_redirects = follow_redirects if follow_redirects is not None else USE_CLIENT_DEFAULT
@@ -583,12 +584,17 @@ class AsyncHTTPHandler:
         params = params or {}
         params.update(HTTPHandler.extract_query_params(url))
 
-        response = await self.client.get(
+        request = self.client.build_request(
+            "GET",
             url,
             params=params,
             headers=headers,  # type: ignore
-            follow_redirects=_follow_redirects,  # type: ignore
             timeout=timeout if timeout is not None else USE_CLIENT_DEFAULT,
+        )
+        response = await self.client.send(
+            request,
+            stream=stream,
+            follow_redirects=_follow_redirects,  # type: ignore
         )
         return response
 

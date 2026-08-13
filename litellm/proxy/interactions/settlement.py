@@ -142,7 +142,9 @@ async def settle_terminal_interaction_once(
         start_time=start_time,
         end_time=end_time,
     )
-    payload["spend"] = float(logging_obj.model_call_details.get("response_cost") or 0.0)
+    from litellm.interactions.cost_calculator import interactions_cost
+
+    payload["spend"] = interactions_cost(response)
     inserted = await proxy_logging_obj.db_spend_update_writer.insert_spend_log_and_increment_counters_once(
         prisma_client=prisma_client,
         payload=payload,

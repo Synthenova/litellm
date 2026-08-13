@@ -20426,6 +20426,7 @@
     "gemini-omni-flash-preview": {
         "input_cost_per_audio_token": 1.5e-06,
         "input_cost_per_token": 1.5e-06,
+        "cache_read_input_token_cost": 1.5e-07,
         "litellm_provider": "vertex_ai-language-models",
         "max_input_tokens": 1048576,
         "max_output_tokens": 65535,
@@ -20434,6 +20435,7 @@
         "output_cost_per_reasoning_token": 9e-06,
         "output_cost_per_token": 9e-06,
         "output_cost_per_video_token": 1.75e-05,
+        "output_cost_per_video_per_second": 0.10,
         "source": "https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/omni-flash-preview",
         "supported_endpoints": [
             "/v1/chat/completions"
