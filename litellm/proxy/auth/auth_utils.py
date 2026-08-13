@@ -1329,6 +1329,7 @@ _MODEL_ROUTING_ROUTE_MARKERS = (
     "/evals",
     "/fine_tuning",
     "/videos",
+    "/interactions",
 )
 _MODEL_ROUTING_HEADER_OR_QUERY_ROUTE_MARKERS = (
     "/files",
@@ -1367,6 +1368,8 @@ _MODEL_ROUTING_ID_FIELDS = (
     "vector_store_id",
     "video_id",
     "character_id",
+    "interaction_id",
+    "previous_interaction_id",
 )
 
 
@@ -1423,6 +1426,17 @@ def _extract_models_from_managed_resource_id(
         return []
 
     candidates: list[str] = []
+
+    if resource_id_field in ("interaction_id", "previous_interaction_id"):
+        try:
+            from litellm.interactions.id_utils import decode_interaction_id
+
+            decoded = decode_interaction_id(resource_id)
+            if decoded and decoded["model"]:
+                return [decoded["model"]]
+        except Exception as e:
+            verbose_proxy_logger.debug("Unable to extract model from interaction ID: %s", str(e))
+        return []
 
     try:
         from litellm.proxy.openai_files_endpoints.common_utils import (

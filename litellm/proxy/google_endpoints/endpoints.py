@@ -267,6 +267,19 @@ async def create_interaction(
     )
 
     data = await _read_request_body(request=request)
+    data["defer_interaction_settlement"] = True
+    previous_interaction_id = data.get("previous_interaction_id")
+    if isinstance(previous_interaction_id, str) and previous_interaction_id.startswith("int_"):
+        from litellm.interactions.id_utils import decode_interaction_id
+        from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+
+        decoded = decode_interaction_id(previous_interaction_id)
+        if decoded is None:
+            raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
+        if not can_access_resource(user_api_key_dict, decoded["user_id"] or None, decoded["team_id"] or None):
+            raise HTTPException(status_code=403, detail="Access denied to interaction")
+        if decoded["model"]:
+            data["model"] = decoded["model"]
 
     if "custom_llm_provider" not in data:
         model = data.get("model")
@@ -282,7 +295,7 @@ async def create_interaction(
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
-        return await processor.base_process_llm_request(
+        response = await processor.base_process_llm_request(
             request=request,
             fastapi_response=fastapi_response,
             user_api_key_dict=user_api_key_dict,
@@ -300,6 +313,19 @@ async def create_interaction(
             user_api_base=user_api_base,
             version=version,
         )
+        if isinstance(response, InteractionsAPIResponse) and response.id.startswith("int_"):
+            from litellm.interactions.id_utils import decode_interaction_id
+            from litellm.proxy.interactions.settlement import (
+                record_interaction_generation,
+                settle_terminal_interaction_once,
+            )
+
+            decoded = decode_interaction_id(response.id)
+            if decoded:
+                metadata = processor.data.get("litellm_metadata") or processor.data.get("metadata") or {}
+                await record_interaction_generation(response, decoded, metadata)
+                await settle_terminal_interaction_once(response, decoded)
+        return response
     except Exception as e:
         raise await processor._handle_llm_api_exception(
             e=e,
@@ -346,16 +372,26 @@ async def get_interaction(
         version,
     )
 
+    from litellm.interactions.id_utils import decode_interaction_id
+    from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+
+    decoded = decode_interaction_id(interaction_id) if interaction_id.startswith("int_") else None
+    if interaction_id.startswith("int_") and decoded is None:
+        raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
+    if decoded and not can_access_resource(user_api_key_dict, decoded["user_id"] or None, decoded["team_id"] or None):
+        raise HTTPException(status_code=403, detail="Access denied to interaction")
     data = {
         "interaction_id": interaction_id,
+        "model": decoded["model"] if decoded and decoded["model"] else None,
         "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
         "stream": request.query_params.get("stream") == "true",
         "last_event_id": request.query_params.get("last_event_id"),
+        "defer_interaction_settlement": True,
     }
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
-        return await processor.base_process_llm_request(
+        response = await processor.base_process_llm_request(
             request=request,
             fastapi_response=fastapi_response,
             user_api_key_dict=user_api_key_dict,
@@ -373,6 +409,13 @@ async def get_interaction(
             user_api_base=user_api_base,
             version=version,
         )
+        if decoded and hasattr(response, "__aiter__"):
+            return _settling_interaction_stream(response, decoded)
+        if decoded and isinstance(response, InteractionsAPIResponse):
+            from litellm.proxy.interactions.settlement import settle_terminal_interaction_once
+
+            await settle_terminal_interaction_once(response, decoded)
+        return response
     except Exception as e:
         raise await processor._handle_llm_api_exception(
             e=e,
@@ -380,6 +423,14 @@ async def get_interaction(
             proxy_logging_obj=proxy_logging_obj,
             version=version,
         )
+
+
+async def _settling_interaction_stream(response, decoded):
+    from litellm.proxy.interactions.settlement import settle_terminal_interaction_once
+
+    async for event in response:
+        await settle_terminal_interaction_once(event, decoded)
+        yield event
 
 
 @router.delete(

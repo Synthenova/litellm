@@ -172,12 +172,11 @@ async def acreate(
             response = init_response
 
         if isinstance(response, InteractionsAPIResponse):
-            from litellm.interactions.id_utils import wrap_interaction_response_id
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
 
             metadata = kwargs.get("litellm_metadata", {}) or {}
-            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
-            wrap_interaction_response_id(response, model_info.get("id"))
-            if response.status == "completed":
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
+            if response.status == "completed" and not kwargs.get("defer_interaction_settlement"):
                 response._hidden_params["settle_interaction_cost"] = True
 
         return response  # type: ignore
@@ -344,12 +343,11 @@ def create(
         )
 
         if isinstance(response, InteractionsAPIResponse):
-            from litellm.interactions.id_utils import wrap_interaction_response_id
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
 
             metadata = kwargs.get("litellm_metadata", {}) or {}
-            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
-            wrap_interaction_response_id(response, model_info.get("id"))
-            if response.status == "completed":
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
+            if response.status == "completed" and not kwargs.get("defer_interaction_settlement"):
                 response._hidden_params["settle_interaction_cost"] = True
 
         return response
@@ -405,11 +403,10 @@ async def aget(
             response = init_response
 
         if isinstance(response, InteractionsAPIResponse):
-            from litellm.interactions.id_utils import wrap_interaction_response_id
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
 
             metadata = kwargs.get("litellm_metadata", {}) or {}
-            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
-            wrap_interaction_response_id(response, model_info.get("id"))
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
 
         return response  # type: ignore
     except Exception as e:
@@ -475,11 +472,10 @@ def get(
             last_event_id=last_event_id,
         )
         if isinstance(response, InteractionsAPIResponse):
-            from litellm.interactions.id_utils import wrap_interaction_response_id
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
 
             metadata = kwargs.get("litellm_metadata", {}) or {}
-            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
-            wrap_interaction_response_id(response, model_info.get("id"))
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
         return response
     except Exception as e:
         raise litellm.exception_type(

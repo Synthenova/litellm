@@ -1,4 +1,5 @@
 import os
+import time
 
 import httpx
 import pytest
@@ -34,10 +35,25 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
             assert interaction["id"].startswith("int_")
             deployment_ids.add(create.headers["x-litellm-model-id"])
 
-            retrieve = client.get(f"/v1beta/interactions/{interaction['id']}")
-            retrieve.raise_for_status()
-            assert retrieve.json()["id"] == interaction["id"]
-            assert retrieve.headers["x-litellm-model-id"] == create.headers["x-litellm-model-id"]
+            for _ in range(90):
+                retrieve = client.get(f"/v1beta/interactions/{interaction['id']}")
+                retrieve.raise_for_status()
+                assert retrieve.json()["id"] == interaction["id"]
+                assert retrieve.headers["x-litellm-model-id"] == create.headers["x-litellm-model-id"]
+                if retrieve.json().get("status") == "completed":
+                    break
+                time.sleep(5)
+            else:
+                pytest.fail("background interaction did not complete")
+
+            key_info = client.get("/key/info", params={"key": VIRTUAL_KEY})
+            key_info.raise_for_status()
+            first_spend = float(key_info.json()["info"]["spend"])
+            repeated = client.get(f"/v1beta/interactions/{interaction['id']}")
+            repeated.raise_for_status()
+            repeated_key_info = client.get("/key/info", params={"key": VIRTUAL_KEY})
+            repeated_key_info.raise_for_status()
+            assert float(repeated_key_info.json()["info"]["spend"]) == first_spend
 
             previous = client.post(
                 "/v1beta/interactions",
@@ -76,3 +92,5 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
             ) as resumed:
                 resumed.raise_for_status()
                 assert resumed.headers["x-litellm-model-id"] == create.headers["x-litellm-model-id"]
+                resumed_events = tuple(line for line in resumed.iter_lines() if line.startswith("data:"))
+            assert resumed_events

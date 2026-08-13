@@ -14,7 +14,7 @@ import httpx
 
 from litellm._logging import verbose_logger
 from litellm.constants import STREAM_SSE_DONE_STRING
-from litellm.interactions.id_utils import wrap_interaction_response_id
+from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import process_response_headers
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -95,8 +95,8 @@ class BaseInteractionsAPIStreamingIterator:
                     parsed_chunk=parsed_chunk,
                     logging_obj=self.logging_obj,
                 )
-                model_info = self.litellm_metadata.get("model_info", {}) if self.litellm_metadata else {}
-                wrap_interaction_response_id(streaming_response, model_info.get("id"))
+                id_context = interaction_id_context(self.litellm_metadata)
+                wrap_interaction_response_id(streaming_response, **id_context)
                 streaming_response._hidden_params.update(self._hidden_params)
 
                 # Store the completed response.
@@ -105,7 +105,10 @@ class BaseInteractionsAPIStreamingIterator:
                 # Remove the legacy check after June 8, 2026.
                 if streaming_response and (
                     getattr(streaming_response, "status", None) == "completed"
-                    or getattr(streaming_response, "event_type", None) == "interaction.completed"
+                    or getattr(streaming_response, "event_type", None)
+                    in {"interaction.completed", "interaction.complete"}
+                    and isinstance(getattr(streaming_response, "interaction", None), dict)
+                    and streaming_response.interaction.get("status") == "completed"
                 ):
                     if self.settle_on_terminal:
                         streaming_response._hidden_params["settle_interaction_cost"] = True

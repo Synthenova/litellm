@@ -5970,6 +5970,8 @@ class Router:
         if decoded:
             kwargs[interaction_key] = decoded["upstream_id"]
             kwargs["model"] = decoded["deployment_id"]
+        elif isinstance(kwargs.get(interaction_key), str) and kwargs[interaction_key].startswith("int_"):
+            raise ValueError("Invalid or tampered interaction ID")
         if custom_llm_provider and "custom_llm_provider" not in kwargs:
             kwargs["custom_llm_provider"] = custom_llm_provider
         # Default to gemini for interactions API

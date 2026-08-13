@@ -186,8 +186,8 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                     model=model,
                     logging_obj=logging_obj,
                     interactions_api_config=interactions_api_config,
-                    settle_on_terminal=True,
-                    litellm_metadata={"model_info": litellm_params.get("model_info") or {}},
+                    settle_on_terminal=not litellm_params.get("defer_interaction_settlement"),
+                    litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
                 )
             else:
                 response = sync_httpx_client.post(
@@ -283,8 +283,8 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                     model=model,
                     logging_obj=logging_obj,
                     interactions_api_config=interactions_api_config,
-                    settle_on_terminal=True,
-                    litellm_metadata={"model_info": litellm_params.get("model_info") or {}},
+                    settle_on_terminal=not litellm_params.get("defer_interaction_settlement"),
+                    litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
                 )
             else:
                 response = await async_httpx_client.post(
@@ -429,7 +429,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                 model=None,
                 logging_obj=logging_obj,
                 interactions_api_config=interactions_api_config,
-                litellm_metadata={"model_info": litellm_params.get("model_info") or {}},
+                litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
             )
         return interactions_api_config.transform_get_interaction_response(
             raw_response=response,
@@ -498,7 +498,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                 model=None,
                 logging_obj=logging_obj,
                 interactions_api_config=interactions_api_config,
-                litellm_metadata={"model_info": litellm_params.get("model_info") or {}},
+                litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
             )
         return interactions_api_config.transform_get_interaction_response(
             raw_response=response,
