@@ -240,6 +240,12 @@ async def create_interaction(
     Supports both model interactions and agent interactions:
     - Model: Provide `model` parameter (e.g., "gemini-2.5-flash")
     - Agent: Provide `agent` parameter (e.g., "deep-research-pro-preview-12-2025")
+
+    Streaming note: disconnecting or aborting an SSE request only stops the
+    client from receiving events. It does not cancel a background interaction,
+    which may continue running and incur provider charges. Use the provider's
+    cancel operation when supported; Vertex AI Interactions does not currently
+    document one.
     
     Example:
     ```bash
@@ -365,6 +371,10 @@ async def get_interaction(
     Get an interaction by ID.
 
     Per OpenAPI spec: GET /{api_version}/interactions/{interaction_id}
+
+    Streaming note: closing a streamed retrieval is client-side only. The
+    provider interaction may continue running and billing, and the stream can
+    be resumed with `stream=true` and `last_event_id`.
     """
     from litellm.proxy.proxy_server import (
         general_settings,

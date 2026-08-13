@@ -81,4 +81,7 @@ class VertexAIInteractionsConfig(GoogleAIStudioInteractionsConfig, VertexBase):
         litellm_params: GenericLiteLLMParams,
         headers: dict,
     ) -> tuple[str, dict]:
-        raise ValueError("Vertex AI Interactions does not document a cancel operation")
+        raise ValueError(
+            "Vertex AI Interactions does not document a cancel operation; stopping SSE is client-side only "
+            "and the provider generation may continue and incur charges"
+        )
