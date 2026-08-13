@@ -44,6 +44,7 @@ class BaseInteractionsAPIStreamingIterator:
         custom_llm_provider: str | None = None,
         settle_on_terminal: bool = False,
         generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
     ):
         self.response = response
         self.model = model
@@ -58,6 +59,7 @@ class BaseInteractionsAPIStreamingIterator:
         self.custom_llm_provider = custom_llm_provider
         self.settle_on_terminal = settle_on_terminal
         self.generation_owned_settlement = generation_owned_settlement
+        self.persist_generation_attribution = persist_generation_attribution
 
         # set hidden params for response headers
         _api_base = get_api_base(
@@ -145,6 +147,7 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
         custom_llm_provider: str | None = None,
         settle_on_terminal: bool = False,
         generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
     ):
         super().__init__(
             response=response,
@@ -155,6 +158,7 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
             custom_llm_provider=custom_llm_provider,
             settle_on_terminal=settle_on_terminal,
             generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
         self.stream_iterator = response.aiter_lines()
 
@@ -181,7 +185,10 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
                             observe_interaction_generation,
                         )
 
-                        await observe_interaction_generation(result, self.litellm_metadata)
+                        await observe_interaction_generation(
+                            result,
+                            self.litellm_metadata if self.persist_generation_attribution else None,
+                        )
                     return result
                 # If result is None, continue the loop to get the next chunk
 
@@ -222,6 +229,7 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
         custom_llm_provider: str | None = None,
         settle_on_terminal: bool = False,
         generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
     ):
         super().__init__(
             response=response,
@@ -232,6 +240,7 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
             custom_llm_provider=custom_llm_provider,
             settle_on_terminal=settle_on_terminal,
             generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
         self.stream_iterator = response.iter_lines()
 
@@ -261,7 +270,7 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
                         run_async_function(
                             async_function=observe_interaction_generation,
                             response=result,
-                            metadata=self.litellm_metadata,
+                            metadata=(self.litellm_metadata if self.persist_generation_attribution else None),
                         )
                     return result
                 # If result is None, continue the loop to get the next chunk

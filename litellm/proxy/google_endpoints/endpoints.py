@@ -272,14 +272,26 @@ async def create_interaction(
     if isinstance(previous_interaction_id, str) and previous_interaction_id.startswith("int_"):
         from litellm.interactions.id_utils import decode_interaction_id
         from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+        from litellm.proxy.auth.auth_checks import can_key_call_model
+        from litellm.proxy.interactions.settlement import get_interaction_attribution
+        from litellm.proxy.proxy_server import llm_model_list, llm_router
 
         decoded = decode_interaction_id(previous_interaction_id)
         if decoded is None:
             raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
-        if not can_access_resource(user_api_key_dict, decoded["user_id"] or None, decoded["team_id"] or None):
+        attribution = await get_interaction_attribution(decoded)
+        if attribution is None:
+            raise HTTPException(status_code=404, detail="Interaction attribution not found")
+        if not can_access_resource(user_api_key_dict, attribution.get("user_id"), attribution.get("team_id")):
             raise HTTPException(status_code=403, detail="Access denied to interaction")
-        if decoded["model"]:
-            data["model"] = decoded["model"]
+        if attribution.get("model"):
+            data["model"] = attribution["model"]
+            await can_key_call_model(
+                model=data["model"],
+                llm_model_list=llm_model_list,
+                valid_token=user_api_key_dict,
+                llm_router=llm_router,
+            )
 
     if "custom_llm_provider" not in data:
         model = data.get("model")
@@ -356,6 +368,7 @@ async def get_interaction(
     """
     from litellm.proxy.proxy_server import (
         general_settings,
+        llm_model_list,
         llm_router,
         proxy_config,
         proxy_logging_obj,
@@ -370,15 +383,29 @@ async def get_interaction(
 
     from litellm.interactions.id_utils import decode_interaction_id
     from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+    from litellm.proxy.auth.auth_checks import can_key_call_model
+    from litellm.proxy.interactions.settlement import get_interaction_attribution
 
     decoded = decode_interaction_id(interaction_id) if interaction_id.startswith("int_") else None
     if interaction_id.startswith("int_") and decoded is None:
         raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
-    if decoded and not can_access_resource(user_api_key_dict, decoded["user_id"] or None, decoded["team_id"] or None):
+    attribution = await get_interaction_attribution(decoded) if decoded else None
+    if decoded and attribution is None:
+        raise HTTPException(status_code=404, detail="Interaction attribution not found")
+    if decoded and not can_access_resource(
+        user_api_key_dict, attribution.get("user_id"), attribution.get("team_id")
+    ):
         raise HTTPException(status_code=403, detail="Access denied to interaction")
+    if attribution and attribution.get("model"):
+        await can_key_call_model(
+            model=attribution["model"],
+            llm_model_list=llm_model_list,
+            valid_token=user_api_key_dict,
+            llm_router=llm_router,
+        )
     data = {
         "interaction_id": interaction_id,
-        "model": decoded["model"] if decoded and decoded["model"] else None,
+        "model": attribution.get("model") if attribution else None,
         "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
         "stream": request.query_params.get("stream") == "true",
         "last_event_id": request.query_params.get("last_event_id"),

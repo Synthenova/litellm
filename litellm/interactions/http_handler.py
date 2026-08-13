@@ -188,6 +188,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                     interactions_api_config=interactions_api_config,
                     settle_on_terminal=True,
                     generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
+                    persist_generation_attribution=True,
                     litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
                 )
             else:
@@ -286,6 +287,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                     interactions_api_config=interactions_api_config,
                     settle_on_terminal=True,
                     generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
+                    persist_generation_attribution=True,
                     litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
                 )
             else:
@@ -312,6 +314,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
         interactions_api_config: BaseInteractionsAPIConfig,
         settle_on_terminal: bool = False,
         generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
         litellm_metadata: dict[str, Any] | None = None,
     ) -> SyncInteractionsAPIStreamingIterator:
         """Create a synchronous streaming iterator.
@@ -329,6 +332,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
             custom_llm_provider=interactions_api_config.custom_llm_provider.value,
             settle_on_terminal=settle_on_terminal,
             generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
 
     def _create_async_streaming_iterator(
@@ -339,6 +343,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
         interactions_api_config: BaseInteractionsAPIConfig,
         settle_on_terminal: bool = False,
         generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
         litellm_metadata: dict[str, Any] | None = None,
     ) -> InteractionsAPIStreamingIterator:
         """Create an asynchronous streaming iterator.
@@ -356,6 +361,7 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
             custom_llm_provider=interactions_api_config.custom_llm_provider.value,
             settle_on_terminal=settle_on_terminal,
             generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
 
     # =========================================================
@@ -436,6 +442,8 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                 logging_obj=logging_obj,
                 interactions_api_config=interactions_api_config,
                 litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
+                settle_on_terminal=True,
+                generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
             )
         return interactions_api_config.transform_get_interaction_response(
             raw_response=response,
@@ -505,6 +513,8 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                 logging_obj=logging_obj,
                 interactions_api_config=interactions_api_config,
                 litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
+                settle_on_terminal=True,
+                generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
             )
         return interactions_api_config.transform_get_interaction_response(
             raw_response=response,

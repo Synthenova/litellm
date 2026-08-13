@@ -7,25 +7,15 @@ from litellm.types.interactions import InteractionsAPIResponse, InteractionsAPIS
 class InteractionId(TypedDict):
     deployment_id: str
     upstream_id: str
-    model: str
-    user_id: str
-    team_id: str
 
 
 def encode_interaction_id(
     deployment_id: str,
     upstream_id: str,
-    *,
-    model: str = "",
-    user_id: str = "",
-    team_id: str = "",
 ) -> str:
     from litellm.proxy.common_utils.encrypt_decrypt_utils import encrypt_value_helper
 
-    payload = json.dumps(
-        {"v": 2, "d": deployment_id, "u": upstream_id, "m": model, "i": user_id, "t": team_id},
-        separators=(",", ":"),
-    )
+    payload = json.dumps({"v": 3, "d": deployment_id, "u": upstream_id}, separators=(",", ":"))
     encrypted = encrypt_value_helper(payload)
     if not isinstance(encrypted, str) or not encrypted:
         raise ValueError("LITELLM_SALT_KEY or master_key is required to issue interaction IDs")
@@ -43,20 +33,14 @@ def decode_interaction_id(interaction_id: str | None) -> InteractionId | None:
             return None
         payload = json.loads(raw)
         if (
-            payload.get("v") != 2
+            payload.get("v") != 3
             or not isinstance(payload.get("d"), str)
             or not isinstance(payload.get("u"), str)
-            or not isinstance(payload.get("m", ""), str)
-            or not isinstance(payload.get("i", ""), str)
-            or not isinstance(payload.get("t", ""), str)
         ):
             return None
         return {
             "deployment_id": payload["d"],
             "upstream_id": payload["u"],
-            "model": payload.get("m", ""),
-            "user_id": payload.get("i", ""),
-            "team_id": payload.get("t", ""),
         }
     except (ValueError, TypeError, json.JSONDecodeError):
         return None
@@ -67,31 +51,18 @@ def interaction_id_context(metadata: dict[str, Any] | None) -> dict[str, str]:
     model_info = metadata.get("model_info") or {}
     return {
         "deployment_id": str(model_info.get("id") or ""),
-        "model": str(metadata.get("model_group") or ""),
-        "user_id": str(metadata.get("user_api_key_user_id") or ""),
-        "team_id": str(metadata.get("user_api_key_team_id") or ""),
     }
 
 
 def wrap_interaction_response_id(
     response: InteractionsAPIResponse | InteractionsAPIStreamingResponse,
     deployment_id: str | None,
-    *,
-    model: str = "",
-    user_id: str = "",
-    team_id: str = "",
 ) -> InteractionsAPIResponse | InteractionsAPIStreamingResponse:
     if not deployment_id:
         return response
 
     def _wrap(value: str) -> str:
-        return encode_interaction_id(
-            deployment_id,
-            value,
-            model=model,
-            user_id=user_id,
-            team_id=team_id,
-        )
+        return encode_interaction_id(deployment_id, value)
 
     response_id = getattr(response, "id", None)
     if response_id and decode_interaction_id(response_id) is None:

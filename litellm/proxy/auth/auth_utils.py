@@ -1432,8 +1432,8 @@ def _extract_models_from_managed_resource_id(
             from litellm.interactions.id_utils import decode_interaction_id
 
             decoded = decode_interaction_id(resource_id)
-            if decoded and decoded["model"]:
-                return [decoded["model"]]
+            if decoded:
+                return []
         except Exception as e:
             verbose_proxy_logger.debug("Unable to extract model from interaction ID: %s", str(e))
         return []
