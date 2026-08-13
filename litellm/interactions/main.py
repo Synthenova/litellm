@@ -171,6 +171,15 @@ async def acreate(
         else:
             response = init_response
 
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
+            wrap_interaction_response_id(response, model_info.get("id"))
+            if response.status == "completed":
+                response._hidden_params["settle_interaction_cost"] = True
+
         return response  # type: ignore
     except Exception as e:
         raise litellm.exception_type(
@@ -310,7 +319,11 @@ def create(
             kwargs=kwargs,
             model=model,
             optional_params=dict(optional_params),
-            litellm_params={"litellm_call_id": litellm_call_id},
+            litellm_params={
+                "litellm_call_id": litellm_call_id,
+                "metadata": kwargs.get("litellm_metadata") or kwargs.get("metadata") or {},
+                "litellm_metadata": kwargs.get("litellm_metadata") or {},
+            },
             custom_llm_provider=custom_llm_provider,
         )
 
@@ -329,6 +342,15 @@ def create(
             _is_async=_is_async,
             stream=stream,
         )
+
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
+            wrap_interaction_response_id(response, model_info.get("id"))
+            if response.status == "completed":
+                response._hidden_params["settle_interaction_cost"] = True
 
         return response
     except Exception as e:
@@ -352,8 +374,10 @@ async def aget(
     extra_headers: dict[str, Any] | None = None,
     timeout: float | httpx.Timeout | None = None,
     custom_llm_provider: str | None = None,
+    stream: bool | None = None,
+    last_event_id: str | None = None,
     **kwargs,
-) -> InteractionsAPIResponse:
+) -> InteractionsAPIResponse | AsyncIterator[InteractionsAPIStreamingResponse]:
     """Async: Get an interaction by its ID."""
     local_vars = locals()
     try:
@@ -366,6 +390,8 @@ async def aget(
             extra_headers=extra_headers,
             timeout=timeout,
             custom_llm_provider=custom_llm_provider or "gemini",
+            stream=stream,
+            last_event_id=last_event_id,
             **kwargs,
         )
 
@@ -377,6 +403,13 @@ async def aget(
             response = await init_response
         else:
             response = init_response
+
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
+            wrap_interaction_response_id(response, model_info.get("id"))
 
         return response  # type: ignore
     except Exception as e:
@@ -395,6 +428,8 @@ def get(
     extra_headers: dict[str, Any] | None = None,
     timeout: float | httpx.Timeout | None = None,
     custom_llm_provider: str | None = None,
+    stream: bool | None = None,
+    last_event_id: str | None = None,
     **kwargs,
 ) -> InteractionsAPIResponse | Coroutine[Any, Any, InteractionsAPIResponse]:
     """Sync: Get an interaction by its ID."""
@@ -419,11 +454,15 @@ def get(
             kwargs=kwargs,
             model=None,
             optional_params={"interaction_id": interaction_id},
-            litellm_params={"litellm_call_id": litellm_call_id},
+            litellm_params={
+                "litellm_call_id": litellm_call_id,
+                "metadata": kwargs.get("litellm_metadata") or kwargs.get("metadata") or {},
+                "litellm_metadata": kwargs.get("litellm_metadata") or {},
+            },
             custom_llm_provider=custom_llm_provider,
         )
 
-        return interactions_http_handler.get_interaction(
+        response = interactions_http_handler.get_interaction(
             interaction_id=interaction_id,
             interactions_api_config=interactions_api_config,
             custom_llm_provider=custom_llm_provider,
@@ -432,7 +471,16 @@ def get(
             extra_headers=extra_headers,
             timeout=timeout,
             _is_async=_is_async,
+            stream=stream,
+            last_event_id=last_event_id,
         )
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            model_info = kwargs.get("model_info") or metadata.get("model_info", {}) or {}
+            wrap_interaction_response_id(response, model_info.get("id"))
+        return response
     except Exception as e:
         raise litellm.exception_type(
             model=None,
@@ -504,6 +552,8 @@ def delete(
     custom_llm_provider = custom_llm_provider or "gemini"
 
     try:
+        if custom_llm_provider == "vertex_ai":
+            raise ValueError("Vertex AI Interactions does not document a delete operation")
         litellm_logging_obj: LiteLLMLoggingObj = kwargs.get("litellm_logging_obj")  # type: ignore
         litellm_call_id: str | None = kwargs.get("litellm_call_id", None)
         _is_async = kwargs.pop("adelete_interaction", False) is True
@@ -606,6 +656,8 @@ def cancel(
     custom_llm_provider = custom_llm_provider or "gemini"
 
     try:
+        if custom_llm_provider == "vertex_ai":
+            raise ValueError("Vertex AI Interactions does not document a cancel operation")
         litellm_logging_obj: LiteLLMLoggingObj = kwargs.get("litellm_logging_obj")  # type: ignore
         litellm_call_id: str | None = kwargs.get("litellm_call_id", None)
         _is_async = kwargs.pop("acancel_interaction", False) is True

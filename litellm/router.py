@@ -5963,10 +5963,17 @@ class Router:
         GET, DELETE, CANCEL Interactions API Requests don't need model-based routing,
         so we call the original function directly with the custom_llm_provider.
         """
+        from litellm.interactions.id_utils import decode_interaction_id
+
+        interaction_key = "previous_interaction_id" if kwargs.get("previous_interaction_id") else "interaction_id"
+        decoded = decode_interaction_id(kwargs.get(interaction_key))
+        if decoded:
+            kwargs[interaction_key] = decoded["upstream_id"]
+            kwargs["model"] = decoded["deployment_id"]
         if custom_llm_provider and "custom_llm_provider" not in kwargs:
             kwargs["custom_llm_provider"] = custom_llm_provider
         # Default to gemini for interactions API
-        if "custom_llm_provider" not in kwargs:
+        if "custom_llm_provider" not in kwargs and not decoded:
             kwargs["custom_llm_provider"] = "gemini"
         # If the proxy accidentally passed agent name as model, clear it
         if kwargs.get("agent") and kwargs.get("model") == kwargs.get("agent"):

@@ -20501,6 +20501,20 @@
         },
         "web_search_billing_unit": "per_query"
     },
+    "vertex_ai/gemini-omni-flash-preview": {
+        "mode": "interactions",
+        "input_cost_per_token": 0.0000015,
+        "output_cost_per_token": 0.000009,
+        "output_cost_per_video_token": 0.0000175,
+        "output_cost_per_video_per_second": 0.10,
+        "input_tokens_per_image": 2040,
+        "input_tokens_per_audio_second": 32,
+        "input_tokens_per_video_second": 5792,
+        "output_tokens_per_video_second": 5792,
+        "supported_regions": [
+            "global"
+        ]
+    },
     "gemini-omni-flash-preview": {
         "input_cost_per_audio_token": 1.5e-06,
         "input_cost_per_token": 1.5e-06,

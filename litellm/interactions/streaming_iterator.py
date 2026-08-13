@@ -14,6 +14,7 @@ import httpx
 
 from litellm._logging import verbose_logger
 from litellm.constants import STREAM_SSE_DONE_STRING
+from litellm.interactions.id_utils import wrap_interaction_response_id
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import process_response_headers
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -41,6 +42,7 @@ class BaseInteractionsAPIStreamingIterator:
         logging_obj: LiteLLMLoggingObj,
         litellm_metadata: dict[str, Any] | None = None,
         custom_llm_provider: str | None = None,
+        settle_on_terminal: bool = False,
     ):
         self.response = response
         self.model = model
@@ -53,6 +55,7 @@ class BaseInteractionsAPIStreamingIterator:
         # set request kwargs
         self.litellm_metadata = litellm_metadata
         self.custom_llm_provider = custom_llm_provider
+        self.settle_on_terminal = settle_on_terminal
 
         # set hidden params for response headers
         _api_base = get_api_base(
@@ -92,6 +95,9 @@ class BaseInteractionsAPIStreamingIterator:
                     parsed_chunk=parsed_chunk,
                     logging_obj=self.logging_obj,
                 )
+                model_info = self.litellm_metadata.get("model_info", {}) if self.litellm_metadata else {}
+                wrap_interaction_response_id(streaming_response, model_info.get("id"))
+                streaming_response._hidden_params.update(self._hidden_params)
 
                 # Store the completed response.
                 # Legacy schema signals completion via status="completed".
@@ -101,8 +107,11 @@ class BaseInteractionsAPIStreamingIterator:
                     getattr(streaming_response, "status", None) == "completed"
                     or getattr(streaming_response, "event_type", None) == "interaction.completed"
                 ):
+                    if self.settle_on_terminal:
+                        streaming_response._hidden_params["settle_interaction_cost"] = True
                     self.completed_response = streaming_response
-                    self._handle_logging_completed_response()
+                    if self.settle_on_terminal:
+                        self._handle_logging_completed_response()
 
                 return streaming_response
 
@@ -129,6 +138,7 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
         logging_obj: LiteLLMLoggingObj,
         litellm_metadata: dict[str, Any] | None = None,
         custom_llm_provider: str | None = None,
+        settle_on_terminal: bool = False,
     ):
         super().__init__(
             response=response,
@@ -137,6 +147,7 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
             logging_obj=logging_obj,
             litellm_metadata=litellm_metadata,
             custom_llm_provider=custom_llm_provider,
+            settle_on_terminal=settle_on_terminal,
         )
         self.stream_iterator = response.aiter_lines()
 
@@ -196,6 +207,7 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
         logging_obj: LiteLLMLoggingObj,
         litellm_metadata: dict[str, Any] | None = None,
         custom_llm_provider: str | None = None,
+        settle_on_terminal: bool = False,
     ):
         super().__init__(
             response=response,
@@ -204,6 +216,7 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
             logging_obj=logging_obj,
             litellm_metadata=litellm_metadata,
             custom_llm_provider=custom_llm_provider,
+            settle_on_terminal=settle_on_terminal,
         )
         self.stream_iterator = response.iter_lines()
 

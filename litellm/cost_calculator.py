@@ -95,6 +95,7 @@ from litellm.types.llms.openai import (
     ResponseAPIUsage,
     ResponsesAPIResponse,
 )
+from litellm.types.interactions import InteractionsAPIResponse, InteractionsAPIStreamingResponse
 from litellm.types.rerank import RerankBilledUnits, RerankResponse
 from litellm.types.utils import (
     CallTypesLiteral,
@@ -1742,6 +1743,12 @@ def response_cost_calculator(
     - float or None: cost of response
     """
     try:
+        if isinstance(response_object, (InteractionsAPIResponse, InteractionsAPIStreamingResponse)):
+            if not response_object._hidden_params.get("settle_interaction_cost"):
+                return 0.0
+            from litellm.interactions.cost_calculator import interactions_cost
+
+            return interactions_cost(response_object)
         response_cost: float = 0.0
         if cache_hit is not None and cache_hit is True:
             response_cost = 0.0

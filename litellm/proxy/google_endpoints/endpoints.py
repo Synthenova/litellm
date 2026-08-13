@@ -268,9 +268,17 @@ async def create_interaction(
 
     data = await _read_request_body(request=request)
 
-    # Default to gemini provider for interactions
     if "custom_llm_provider" not in data:
-        data["custom_llm_provider"] = "gemini"
+        model = data.get("model")
+        previous_interaction_id = data.get("previous_interaction_id")
+        data["custom_llm_provider"] = (
+            "vertex_ai"
+            if isinstance(model, str)
+            and model.startswith("vertex_ai/")
+            or isinstance(previous_interaction_id, str)
+            and previous_interaction_id.startswith("int_")
+            else "gemini"
+        )
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
@@ -338,7 +346,12 @@ async def get_interaction(
         version,
     )
 
-    data = {"interaction_id": interaction_id, "custom_llm_provider": "gemini"}
+    data = {
+        "interaction_id": interaction_id,
+        "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
+        "stream": request.query_params.get("stream") == "true",
+        "last_event_id": request.query_params.get("last_event_id"),
+    }
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
@@ -406,7 +419,10 @@ async def delete_interaction(
         version,
     )
 
-    data = {"interaction_id": interaction_id, "custom_llm_provider": "gemini"}
+    data = {
+        "interaction_id": interaction_id,
+        "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
+    }
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
     try:
@@ -474,7 +490,10 @@ async def cancel_interaction(
         version,
     )
 
-    data = {"interaction_id": interaction_id, "custom_llm_provider": "gemini"}
+    data = {
+        "interaction_id": interaction_id,
+        "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
+    }
 
     processor = ProxyBaseLLMRequestProcessing(data=data)
     try:

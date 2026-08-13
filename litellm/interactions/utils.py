@@ -47,6 +47,13 @@ def get_provider_interactions_api_config(
 
         return GoogleAIStudioInteractionsConfig()
 
+    if provider == LlmProviders.VERTEX_AI.value or provider == "vertex_ai":
+        from litellm.llms.vertex_ai.interactions.transformation import (
+            VertexAIInteractionsConfig,
+        )
+
+        return VertexAIInteractionsConfig()
+
     return None
 
 
@@ -80,5 +87,13 @@ class InteractionsAPIRequestUtils:
             default_param_values={k: None for k in INTERACTIONS_API_OPTIONAL_PARAMS},
             additional_endpoint_specific_params=["input", "model", "agent"],
         )
+
+        previous_interaction_id = non_default_params.get("previous_interaction_id")
+        if isinstance(previous_interaction_id, str):
+            from litellm.interactions.id_utils import decode_interaction_id
+
+            decoded = decode_interaction_id(previous_interaction_id)
+            if decoded:
+                non_default_params["previous_interaction_id"] = decoded["upstream_id"]
 
         return cast(InteractionsAPIOptionalRequestParams, non_default_params)
