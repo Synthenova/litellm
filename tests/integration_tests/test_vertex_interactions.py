@@ -304,8 +304,10 @@ def test_real_vertex_interactions_create_retrieve_resume_and_affinity() -> None:
             },
         )
         previous.raise_for_status()
-        assert previous.json()["id"].startswith("int_")
+        previous_interaction_id = previous.json()["id"]
+        assert previous_interaction_id.startswith("int_")
         assert previous.headers["x-litellm-model-id"] == affinity_deployment_id
+        _poll_terminal(client, previous_interaction_id, affinity_deployment_id)
 
         stream = client.post(
             "/v1beta/interactions",

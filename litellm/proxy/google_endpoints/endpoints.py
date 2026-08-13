@@ -303,6 +303,7 @@ async def create_interaction(
     if bool(data.get("model")) == bool(data.get("agent")):
         raise HTTPException(status_code=400, detail="Exactly one of model or agent is required")
     data["defer_interaction_settlement"] = True
+    interaction_model_group = None
     previous_interaction_id = data.get("previous_interaction_id")
     if isinstance(previous_interaction_id, str) and previous_interaction_id.startswith("int_"):
         from litellm.interactions.id_utils import decode_interaction_id
@@ -320,7 +321,8 @@ async def create_interaction(
         if not can_access_resource(user_api_key_dict, attribution.get("user_id"), attribution.get("team_id")):
             raise HTTPException(status_code=403, detail="Access denied to interaction")
         if attribution.get("model"):
-            data["model"] = attribution["model"]
+            interaction_model_group = attribution["model"]
+            data["model"] = interaction_model_group
             await can_key_call_model(
                 model=data["model"],
                 llm_model_list=llm_model_list,
@@ -366,7 +368,9 @@ async def create_interaction(
 
             decoded = decode_interaction_id(response.id)
             if decoded:
-                metadata = processor.data.get("litellm_metadata") or processor.data.get("metadata") or {}
+                metadata = dict(processor.data.get("litellm_metadata") or processor.data.get("metadata") or {})
+                if interaction_model_group:
+                    metadata["model_group"] = interaction_model_group
                 await observe_interaction_generation(response, metadata)
         return response
     except Exception as e:
