@@ -2978,6 +2978,11 @@ def get_optional_params_image_gen(
         "imageConfig": None,
         "tools": None,
         "web_search_options": None,
+        **{
+            param: None
+            for param in ("aspect_ratio", "aspectRatio", "image_size", "imageSize")
+            if provider_config is not None and param in provider_config.get_supported_openai_params(model=model or "")
+        },
     }
 
     non_default_params = _get_non_default_params(

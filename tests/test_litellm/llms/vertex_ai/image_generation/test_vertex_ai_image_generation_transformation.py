@@ -16,12 +16,75 @@ from litellm.llms.vertex_ai.image_generation.vertex_gemini_transformation import
 from litellm.llms.vertex_ai.image_generation.vertex_imagen_transformation import (
     VertexAIImagenImageGenerationConfig,
 )
+from litellm.utils import get_optional_params_image_gen
 
 
 class TestVertexAIGeminiImageGenerationConfig:
     def setup_method(self):
         """Set up test fixtures"""
         self.config = VertexAIGeminiImageGenerationConfig()
+
+    @pytest.mark.parametrize("model", ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"])
+    @pytest.mark.parametrize("aspect_param", ["aspect_ratio", "aspectRatio"])
+    @pytest.mark.parametrize("resolution_param", ["image_size", "imageSize"])
+    @pytest.mark.parametrize("nested", [False, True])
+    def test_flat_image_controls_survive_filter_and_vertex_request(
+        self, model: str, aspect_param: str, resolution_param: str, nested: bool
+    ) -> None:
+        image_config = {"aspectRatio": "16:9", "imageSize": "2K", "personGeneration": "DONT_ALLOW"}
+        config = get_vertex_ai_image_generation_config(model)
+        assert isinstance(config, VertexAIGeminiImageGenerationConfig)
+        optional_params = get_optional_params_image_gen(
+            model=model,
+            n=1,
+            custom_llm_provider="vertex_ai",
+            provider_config=config,
+            imageConfig=image_config if nested else None,
+            **{aspect_param: "1:1", resolution_param: "1K"},
+        )
+        request = config.transform_image_generation_request(
+            model=model, prompt="A ceramic cup", optional_params=optional_params, litellm_params={}, headers={}
+        )
+        assert request["generationConfig"]["imageConfig"] == {
+            **({"personGeneration": "DONT_ALLOW"} if nested else {}),
+            "aspectRatio": "1:1",
+            "imageSize": "1K",
+        }
+        assert "aspect_ratio" not in optional_params
+        assert "image_size" not in optional_params
+        assert image_config == {"aspectRatio": "16:9", "imageSize": "2K", "personGeneration": "DONT_ALLOW"}
+
+    @pytest.mark.parametrize("model", ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"])
+    @pytest.mark.parametrize(
+        "controls", [{}, {"aspect_ratio": None, "aspectRatio": None, "image_size": None, "imageSize": None}]
+    )
+    def test_omitted_auto_image_controls_do_not_create_image_config(
+        self, model: str, controls: dict[str, None]
+    ) -> None:
+        optional_params = get_optional_params_image_gen(
+            model=model, custom_llm_provider="vertex_ai", provider_config=self.config, **controls
+        )
+        request = self.config.transform_image_generation_request(
+            model=model, prompt="A ceramic cup", optional_params=optional_params, litellm_params={}, headers={}
+        )
+        assert optional_params == {}
+        assert "imageConfig" not in request["generationConfig"]
+
+    @pytest.mark.parametrize("model", ["gemini-3.1-flash-image", "gemini-3.1-flash-lite-image"])
+    def test_flat_image_controls_respect_additional_drop_params(self, model: str) -> None:
+        optional_params = get_optional_params_image_gen(
+            model=model,
+            custom_llm_provider="vertex_ai",
+            provider_config=self.config,
+            aspect_ratio="1:1",
+            image_size="1K",
+            additional_drop_params=["aspect_ratio", "image_size"],
+        )
+        request = self.config.transform_image_generation_request(
+            model=model, prompt="A ceramic cup", optional_params=optional_params, litellm_params={}, headers={}
+        )
+        assert optional_params == {}
+        assert "imageConfig" not in request["generationConfig"]
 
     def test_get_supported_openai_params(self):
         """Test get_supported_openai_params returns correct params"""

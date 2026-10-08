@@ -282,6 +282,36 @@ def test_get_optional_params_image_gen_filters_empty_values():
     assert optional_params == {}
 
 
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        (LlmProviders.OPENAI, "gpt-image-1"),
+        (LlmProviders.AZURE, "gpt-image-1"),
+        (LlmProviders.VERTEX_AI, "imagen-4.0-generate-001"),
+    ],
+)
+@pytest.mark.parametrize("with_config", [False, True])
+@pytest.mark.parametrize("drop_params", [False, True])
+def test_image_controls_preserve_other_provider_passthrough(
+    provider: LlmProviders, model: str, with_config: bool, drop_params: bool
+) -> None:
+    controls = {"aspect_ratio": "1:1", "aspectRatio": "9:16", "image_size": "1K", "imageSize": "2K"}
+    config = (
+        ProviderConfigManager.get_provider_image_generation_config(model=model, provider=provider)
+        if with_config
+        else None
+    )
+    if with_config:
+        assert config is not None
+        assert not set(controls).intersection(config.get_supported_openai_params(model))
+    optional_params = get_optional_params_image_gen(
+        model=model, custom_llm_provider=provider.value, provider_config=config, drop_params=drop_params, **controls
+    )
+    assert optional_params == (
+        {"extra_body": controls} if provider in (LlmProviders.OPENAI, LlmProviders.AZURE) else controls
+    )
+
+
 def test_gpt_image_provider_detection_covers_existing_family():
     for image_model in ("gpt-image-1", "gpt-image-1-mini", "gpt-image-1.5"):
         model, custom_llm_provider, _, _ = litellm.get_llm_provider(model=image_model)
