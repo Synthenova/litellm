@@ -136,6 +136,7 @@ from litellm.types.llms.openai import (
     ResponseIncompleteEvent,
     ResponsesAPIResponse,
 )
+from litellm.types.interactions import InteractionsAPIResponse, InteractionsAPIStreamingResponse
 from litellm.types.mcp import MCPPostCallResponseObject
 from litellm.types.prompts.init_prompts import PromptSpec
 from litellm.types.rerank import RerankResponse
@@ -2607,6 +2608,7 @@ class Logging(LiteLLMLoggingBaseClass):
             and logging_result.get("object") == "search"  # Search API (dict format)
             or isinstance(logging_result, VideoObject)
             or isinstance(logging_result, ContainerObject)
+            or isinstance(logging_result, (InteractionsAPIResponse, InteractionsAPIStreamingResponse))
             or isinstance(logging_result, LiteLLMSendMessageResponse)  # A2A
             or (self.call_type == CallTypes.call_mcp_tool.value)
         ):

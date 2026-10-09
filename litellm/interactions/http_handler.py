@@ -184,6 +184,10 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                     model=model,
                     logging_obj=logging_obj,
                     interactions_api_config=interactions_api_config,
+                    settle_on_terminal=True,
+                    generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
+                    persist_generation_attribution=True,
+                    litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
                 )
             else:
                 response = sync_httpx_client.post(
@@ -279,6 +283,10 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                     model=model,
                     logging_obj=logging_obj,
                     interactions_api_config=interactions_api_config,
+                    settle_on_terminal=True,
+                    generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
+                    persist_generation_attribution=True,
+                    litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
                 )
             else:
                 response = await async_httpx_client.post(
@@ -302,6 +310,10 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
         model: str | None,
         logging_obj: LiteLLMLoggingObj,
         interactions_api_config: BaseInteractionsAPIConfig,
+        settle_on_terminal: bool = False,
+        generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
+        litellm_metadata: dict[str, Any] | None = None,
     ) -> SyncInteractionsAPIStreamingIterator:
         """Create a synchronous streaming iterator.
 
@@ -313,6 +325,12 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
             model=model,
             interactions_api_config=interactions_api_config,
             logging_obj=logging_obj,
+            litellm_metadata=litellm_metadata
+            or logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
+            custom_llm_provider=interactions_api_config.custom_llm_provider.value,
+            settle_on_terminal=settle_on_terminal,
+            generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
 
     def _create_async_streaming_iterator(
@@ -321,6 +339,10 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
         model: str | None,
         logging_obj: LiteLLMLoggingObj,
         interactions_api_config: BaseInteractionsAPIConfig,
+        settle_on_terminal: bool = False,
+        generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
+        litellm_metadata: dict[str, Any] | None = None,
     ) -> InteractionsAPIStreamingIterator:
         """Create an asynchronous streaming iterator.
 
@@ -332,6 +354,12 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
             model=model,
             interactions_api_config=interactions_api_config,
             logging_obj=logging_obj,
+            litellm_metadata=litellm_metadata
+            or logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
+            custom_llm_provider=interactions_api_config.custom_llm_provider.value,
+            settle_on_terminal=settle_on_terminal,
+            generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
 
     # =========================================================
@@ -349,8 +377,19 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
         timeout: float | httpx.Timeout | None = None,
         client: HTTPHandler | None = None,
         _is_async: bool = False,
+        stream: bool | None = None,
+        last_event_id: str | None = None,
     ) -> InteractionsAPIResponse | Coroutine[object, object, InteractionsAPIResponse]:
         """Get an interaction by ID."""
+        if custom_llm_provider == "vertex_ai" and last_event_id:
+            raise litellm.BadRequestError(
+                message=(
+                    "Vertex AI Gemini Omni streamed retrieval is a single SSE-formatted snapshot and does not "
+                    "support last_event_id resume. Poll GET /v1beta/interactions/{interaction_id} instead."
+                ),
+                model=None,
+                llm_provider="vertex_ai",
+            )
         if _is_async:
             return self.async_get_interaction(
                 interaction_id=interaction_id,
@@ -360,6 +399,8 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                 logging_obj=logging_obj,
                 extra_headers=extra_headers,
                 timeout=timeout,
+                stream=stream,
+                last_event_id=last_event_id,
             )
 
         if client is None:
@@ -379,6 +420,11 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
             litellm_params=litellm_params,
             headers=headers,
         )
+        if stream:
+            params["alt"] = "sse"
+            params["stream"] = "true"
+        if last_event_id:
+            params["last_event_id"] = last_event_id
 
         logging_obj.pre_call(
             input=interaction_id,
@@ -391,10 +437,21 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                 url=url,
                 headers=headers,
                 params=params,
+                stream=stream is True,
             )
         except Exception as e:
             raise self._handle_error(e=e, provider_config=interactions_api_config)
 
+        if stream:
+            return self._create_sync_streaming_iterator(
+                response=response,
+                model=None,
+                logging_obj=logging_obj,
+                interactions_api_config=interactions_api_config,
+                litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
+                settle_on_terminal=True,
+                generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
+            )
         return interactions_api_config.transform_get_interaction_response(
             raw_response=response,
             logging_obj=logging_obj,
@@ -410,7 +467,9 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
         extra_headers: dict[str, str] | None = None,
         timeout: float | httpx.Timeout | None = None,
         client: AsyncHTTPHandler | None = None,
-    ) -> InteractionsAPIResponse:
+        stream: bool | None = None,
+        last_event_id: str | None = None,
+    ) -> InteractionsAPIResponse | AsyncIterator[InteractionsAPIStreamingResponse]:
         """Get an interaction by ID (async version)."""
         if client is None:
             async_httpx_client = get_async_httpx_client(
@@ -432,6 +491,11 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
             litellm_params=litellm_params,
             headers=headers,
         )
+        if stream:
+            params["alt"] = "sse"
+            params["stream"] = "true"
+        if last_event_id:
+            params["last_event_id"] = last_event_id
 
         logging_obj.pre_call(
             input=interaction_id,
@@ -444,10 +508,21 @@ class InteractionsHTTPHandler(_BaseHTTPHandler):
                 url=url,
                 headers=headers,
                 params=params,
+                stream=stream is True,
             )
         except Exception as e:
             raise self._handle_error(e=e, provider_config=interactions_api_config)
 
+        if stream:
+            return self._create_async_streaming_iterator(
+                response=response,
+                model=None,
+                logging_obj=logging_obj,
+                interactions_api_config=interactions_api_config,
+                litellm_metadata=logging_obj.model_call_details.get("litellm_params", {}).get("metadata"),
+                settle_on_terminal=True,
+                generation_owned_settlement=bool(litellm_params.get("defer_interaction_settlement")),
+            )
         return interactions_api_config.transform_get_interaction_response(
             raw_response=response,
             logging_obj=logging_obj,

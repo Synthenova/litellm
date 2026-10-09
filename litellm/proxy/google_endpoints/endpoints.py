@@ -1,17 +1,45 @@
 from typing import Final
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import ORJSONResponse
 
 from litellm.proxy._types import *
 from litellm.proxy.auth.user_api_key_auth import UserAPIKeyAuth, user_api_key_auth
 from litellm.proxy.common_request_processing import ProxyBaseLLMRequestProcessing
 from litellm.proxy.common_utils.http_parsing_utils import _read_request_body
+from litellm.types.interactions import InteractionsAPIResponse
 from litellm.types.llms.vertex_ai import TokenCountDetailsResponse
 
 router: Final = APIRouter(
     tags=["google genai endpoints"],
 )
+
+
+async def _authorize_managed_interaction(
+    interaction_id: str,
+    user_api_key_dict: UserAPIKeyAuth,
+) -> None:
+    from litellm.interactions.id_utils import decode_interaction_id
+    from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+    from litellm.proxy.auth.auth_checks import can_key_call_model
+    from litellm.proxy.interactions.settlement import get_interaction_attribution
+    from litellm.proxy.proxy_server import llm_model_list, llm_router
+
+    decoded = decode_interaction_id(interaction_id)
+    if decoded is None:
+        raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
+    attribution = await get_interaction_attribution(decoded)
+    if attribution is None:
+        raise HTTPException(status_code=404, detail="Interaction attribution not found")
+    if not can_access_resource(user_api_key_dict, attribution.get("user_id"), attribution.get("team_id")):
+        raise HTTPException(status_code=403, detail="Access denied to interaction")
+    if attribution.get("model"):
+        await can_key_call_model(
+            model=attribution["model"],
+            llm_model_list=llm_model_list,
+            valid_token=user_api_key_dict,
+            llm_router=llm_router,
+        )
 
 
 @router.post(
@@ -242,6 +270,11 @@ async def create_interaction(
     Supports both model interactions and agent interactions:
     - Model: Provide `model` parameter (e.g., "gemini-2.5-flash")
     - Agent: Provide `agent` parameter (e.g., "deep-research-pro-preview-12-2025")
+
+    Vertex AI Gemini Omni does not support live creation streaming. Use
+    `background=true`, retain the returned interaction ID, and poll
+    `GET /v1beta/interactions/{interaction_id}`. Vertex also has no provider-side
+    cancel operation: stopping client delivery does not stop generation or billing.
     
     Example:
     ```bash
@@ -268,15 +301,52 @@ async def create_interaction(
         version,
     )
 
-    data: Final = await _read_request_body(request=request)
+    data = await _read_request_body(request=request)
+    if bool(data.get("model")) == bool(data.get("agent")):
+        raise HTTPException(status_code=400, detail="Exactly one of model or agent is required")
+    data["defer_interaction_settlement"] = True
+    interaction_model_group = None
+    previous_interaction_id = data.get("previous_interaction_id")
+    if isinstance(previous_interaction_id, str) and previous_interaction_id.startswith("int_"):
+        from litellm.interactions.id_utils import decode_interaction_id
+        from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+        from litellm.proxy.auth.auth_checks import can_key_call_model
+        from litellm.proxy.interactions.settlement import get_interaction_attribution
+        from litellm.proxy.proxy_server import llm_model_list, llm_router
 
-    # Default to gemini provider for interactions
+        decoded = decode_interaction_id(previous_interaction_id)
+        if decoded is None:
+            raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
+        attribution = await get_interaction_attribution(decoded)
+        if attribution is None:
+            raise HTTPException(status_code=404, detail="Interaction attribution not found")
+        if not can_access_resource(user_api_key_dict, attribution.get("user_id"), attribution.get("team_id")):
+            raise HTTPException(status_code=403, detail="Access denied to interaction")
+        if attribution.get("model"):
+            interaction_model_group = attribution["model"]
+            data["model"] = interaction_model_group
+            await can_key_call_model(
+                model=data["model"],
+                llm_model_list=llm_model_list,
+                valid_token=user_api_key_dict,
+                llm_router=llm_router,
+            )
+
     if "custom_llm_provider" not in data:
-        data["custom_llm_provider"] = "gemini"
+        model = data.get("model")
+        previous_interaction_id = data.get("previous_interaction_id")
+        data["custom_llm_provider"] = (
+            "vertex_ai"
+            if isinstance(model, str)
+            and model.startswith("vertex_ai/")
+            or isinstance(previous_interaction_id, str)
+            and previous_interaction_id.startswith("int_")
+            else "gemini"
+        )
 
     processor: Final = ProxyBaseLLMRequestProcessing(data=data)
     try:
-        return await processor.base_process_llm_request(
+        response = await processor.base_process_llm_request(
             request=request,
             fastapi_response=fastapi_response,
             user_api_key_dict=user_api_key_dict,
@@ -294,6 +364,17 @@ async def create_interaction(
             user_api_base=user_api_base,
             version=version,
         )
+        if isinstance(response, InteractionsAPIResponse) and response.id.startswith("int_"):
+            from litellm.interactions.id_utils import decode_interaction_id
+            from litellm.proxy.interactions.settlement import observe_interaction_generation
+
+            decoded = decode_interaction_id(response.id)
+            if decoded:
+                metadata = dict(processor.data.get("litellm_metadata") or processor.data.get("metadata") or {})
+                if interaction_model_group:
+                    metadata["model_group"] = interaction_model_group
+                await observe_interaction_generation(response, metadata)
+        return response
     except Exception as e:
         raise await processor._handle_llm_api_exception(
             e=e,
@@ -325,9 +406,15 @@ async def get_interaction(
     Get an interaction by ID.
 
     Per OpenAPI spec: GET /{api_version}/interactions/{interaction_id}
+
+    Polling is the supported Vertex AI Gemini Omni progress mechanism. With
+    `stream=true`, Vertex returns one SSE-formatted snapshot rather than live
+    generation events. It emits no event cursor, so `last_event_id` resume is
+    rejected. Closing snapshot delivery does not stop generation or billing.
     """
     from litellm.proxy.proxy_server import (
         general_settings,
+        llm_model_list,
         llm_router,
         proxy_config,
         proxy_logging_obj,
@@ -340,11 +427,45 @@ async def get_interaction(
         version,
     )
 
-    data: Final = {"interaction_id": interaction_id, "custom_llm_provider": "gemini"}
+    from litellm.interactions.id_utils import decode_interaction_id
+    from litellm.llms.base_llm.managed_resources.isolation import can_access_resource
+    from litellm.proxy.auth.auth_checks import can_key_call_model
+    from litellm.proxy.interactions.settlement import get_interaction_attribution
+
+    has_restricted_model_policy = bool(
+        user_api_key_dict.models or user_api_key_dict.team_models or user_api_key_dict.access_group_ids
+    )
+    if not interaction_id.startswith("int_") and has_restricted_model_policy:
+        raise HTTPException(status_code=400, detail="A LiteLLM-issued interaction ID is required")
+    decoded = decode_interaction_id(interaction_id) if interaction_id.startswith("int_") else None
+    if interaction_id.startswith("int_") and decoded is None:
+        raise HTTPException(status_code=400, detail="Invalid or tampered interaction ID")
+    attribution = await get_interaction_attribution(decoded) if decoded else None
+    if decoded and attribution is None:
+        raise HTTPException(status_code=404, detail="Interaction attribution not found")
+    if decoded and not can_access_resource(
+        user_api_key_dict, attribution.get("user_id"), attribution.get("team_id")
+    ):
+        raise HTTPException(status_code=403, detail="Access denied to interaction")
+    if attribution and attribution.get("model"):
+        await can_key_call_model(
+            model=attribution["model"],
+            llm_model_list=llm_model_list,
+            valid_token=user_api_key_dict,
+            llm_router=llm_router,
+        )
+    data = {
+        "interaction_id": interaction_id,
+        "model": attribution.get("model") if attribution else None,
+        "custom_llm_provider": "vertex_ai" if decoded else "gemini",
+        "stream": request.query_params.get("stream") == "true",
+        "last_event_id": request.query_params.get("last_event_id"),
+        "defer_interaction_settlement": True,
+    }
 
     processor: Final = ProxyBaseLLMRequestProcessing(data=data)
     try:
-        return await processor.base_process_llm_request(
+        response = await processor.base_process_llm_request(
             request=request,
             fastapi_response=fastapi_response,
             user_api_key_dict=user_api_key_dict,
@@ -362,6 +483,12 @@ async def get_interaction(
             user_api_base=user_api_base,
             version=version,
         )
+        if decoded and isinstance(response, InteractionsAPIResponse):
+            from litellm.proxy.interactions.settlement import observe_interaction_generation
+
+            response.id = interaction_id
+            await observe_interaction_generation(response)
+        return response
     except Exception as e:
         raise await processor._handle_llm_api_exception(
             e=e,
@@ -408,7 +535,14 @@ async def delete_interaction(
         version,
     )
 
-    data: Final = {"interaction_id": interaction_id, "custom_llm_provider": "gemini"}
+    if interaction_id.startswith("int_"):
+        await _authorize_managed_interaction(interaction_id, user_api_key_dict)
+        raise HTTPException(status_code=400, detail="Vertex AI Interactions does not support provider-side deletion")
+
+    data = {
+        "interaction_id": interaction_id,
+        "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
+    }
 
     processor: Final = ProxyBaseLLMRequestProcessing(data=data)
     try:
@@ -461,6 +595,10 @@ async def cancel_interaction(
     Cancel an interaction by ID.
 
     Per OpenAPI spec: POST /{api_version}/interactions/{interaction_id}:cancel
+
+    Vertex AI Gemini Omni does not implement provider-side cancellation. This
+    route returns 400 for Vertex interactions; stopping client delivery is not
+    cancellation and does not stop generation or billing.
     """
     from litellm.proxy.proxy_server import (
         general_settings,
@@ -476,7 +614,20 @@ async def cancel_interaction(
         version,
     )
 
-    data: Final = {"interaction_id": interaction_id, "custom_llm_provider": "gemini"}
+    if interaction_id.startswith("int_"):
+        await _authorize_managed_interaction(interaction_id, user_api_key_dict)
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Vertex AI Gemini Omni Interactions does not support provider-side cancellation; "
+                "stopping client delivery does not stop generation or billing"
+            ),
+        )
+
+    data = {
+        "interaction_id": interaction_id,
+        "custom_llm_provider": "vertex_ai" if interaction_id.startswith("int_") else "gemini",
+    }
 
     processor: Final = ProxyBaseLLMRequestProcessing(data=data)
     try:

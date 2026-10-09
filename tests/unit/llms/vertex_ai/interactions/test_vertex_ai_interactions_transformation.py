@@ -74,7 +74,7 @@ class TestValidateEnvironment:
         assert headers["Authorization"] == "Bearer test-token"
         assert headers["Content-Type"] == "application/json"
         assert "x-goog-api-key" not in headers
-        assert "Api-Revision" not in headers
+        assert headers["Api-Revision"] == "2026-05-20"
         assert minter.calls == [("creds.json", "test-proj")]
 
     def test_caller_authorization_wins(self, config, litellm_params):
