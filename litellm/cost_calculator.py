@@ -2014,7 +2014,13 @@ def response_cost_calculator(
     - float or None: cost of response
     """
     try:
-        if isinstance(response_object, (InteractionsAPIResponse, InteractionsAPIStreamingResponse)):
+        if isinstance(response_object, (InteractionsAPIResponse, InteractionsAPIStreamingResponse)) and (
+            custom_llm_provider == "vertex_ai"
+            or response_object._hidden_params.get("custom_llm_provider") == "vertex_ai"
+            or "settle_interaction_cost" in response_object._hidden_params
+        ):
+            # Infiknit: Vertex interactions bill once via litellm.proxy.interactions.settlement.
+            # Other providers keep upstream's background-poll billing.
             if not response_object._hidden_params.get("settle_interaction_cost"):
                 return 0.0
             from litellm.interactions.cost_calculator import interactions_cost
