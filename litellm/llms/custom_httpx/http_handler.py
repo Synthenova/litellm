@@ -733,6 +733,7 @@ class AsyncHTTPHandler:
         follow_redirects: bool | None = None,
         timeout: float | httpx.Timeout | None = None,
         max_response_bytes: int | None = None,
+        stream: bool = False,
     ):
         # Set follow_redirects to UseClientDefault if None
         _follow_redirects: Final = follow_redirects if follow_redirects is not None else USE_CLIENT_DEFAULT
@@ -750,13 +751,14 @@ class AsyncHTTPHandler:
                 timeout=self.client.timeout if timeout is None else httpx.Timeout(timeout),
             )
 
-        response: Final = await self.client.get(
+        request: Final = self.client.build_request(
+            "GET",
             url,
             params=params,
             headers=headers,
-            follow_redirects=_follow_redirects,
             timeout=timeout if timeout is not None else USE_CLIENT_DEFAULT,
         )
+        response: Final = await self.client.send(request, stream=stream, follow_redirects=_follow_redirects)
         return response
 
     async def _get_with_response_limit(

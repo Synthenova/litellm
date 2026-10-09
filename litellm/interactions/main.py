@@ -60,6 +60,7 @@ from litellm.types.interactions import (
     InteractionTool,
 )
 from litellm.types.router import GenericLiteLLMParams
+from litellm.types.utils import LlmProviders
 from litellm.utils import client
 
 # ============================================================
@@ -175,11 +176,22 @@ async def acreate(
         else:
             response = init_response
 
-        await maybe_schedule_background_interaction_cost_polling(
-            response=response,
-            create_kwargs=kwargs,
-            custom_llm_provider=custom_llm_provider,
-        )
+        if custom_llm_provider != LlmProviders.VERTEX_AI.value:
+            # Infiknit: Vertex interactions settle once through litellm.proxy.interactions.settlement
+            # when a poll first observes the terminal state; upstream background polling would bill twice.
+            await maybe_schedule_background_interaction_cost_polling(
+                response=response,
+                create_kwargs=kwargs,
+                custom_llm_provider=custom_llm_provider,
+            )
+
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
+            if response.status == "completed" and not kwargs.get("defer_interaction_settlement"):
+                response._hidden_params["settle_interaction_cost"] = True
 
         return response
     except Exception as e:
@@ -293,6 +305,16 @@ def create(
             model=model,
         )
 
+        if custom_llm_provider == "vertex_ai" and stream:
+            raise litellm.BadRequestError(
+                message=(
+                    "Vertex AI Gemini Omni Interactions does not support live streaming. "
+                    "Use background=true and poll GET /v1beta/interactions/{interaction_id}."
+                ),
+                model=model,
+                llm_provider="vertex_ai",
+            )
+
         # Get optional params using utility (similar to responses API pattern)
         local_vars.update(kwargs)
         optional_params: Final = InteractionsAPIRequestUtils.get_requested_interactions_api_optional_params(local_vars)
@@ -320,7 +342,12 @@ def create(
             kwargs=kwargs,
             model=model,
             optional_params=dict(optional_params),
-            litellm_params={"litellm_call_id": litellm_call_id},
+            litellm_params={
+                "litellm_call_id": litellm_call_id,
+                "defer_interaction_settlement": kwargs.get("defer_interaction_settlement", False),
+                "metadata": kwargs.get("litellm_metadata") or kwargs.get("metadata") or {},
+                "litellm_metadata": kwargs.get("litellm_metadata") or {},
+            },
             custom_llm_provider=custom_llm_provider,
         )
 
@@ -339,6 +366,14 @@ def create(
             _is_async=_is_async,
             stream=stream,
         )
+
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
+            if response.status == "completed" and not kwargs.get("defer_interaction_settlement"):
+                response._hidden_params["settle_interaction_cost"] = True
 
         return response
     except Exception as e:
@@ -362,8 +397,10 @@ async def aget(
     extra_headers: dict[str, Any] | None = None,
     timeout: float | httpx.Timeout | None = None,
     custom_llm_provider: str | None = None,
+    stream: bool | None = None,
+    last_event_id: str | None = None,
     **kwargs,
-) -> InteractionsAPIResponse:
+) -> InteractionsAPIResponse | AsyncIterator[InteractionsAPIStreamingResponse]:
     """Async: Get an interaction by its ID."""
     local_vars: Final = locals()
     try:
@@ -376,6 +413,8 @@ async def aget(
             extra_headers=extra_headers,
             timeout=timeout,
             custom_llm_provider=custom_llm_provider or "gemini",
+            stream=stream,
+            last_event_id=last_event_id,
             **kwargs,
         )
 
@@ -387,6 +426,12 @@ async def aget(
             response = await init_response
         else:
             response = init_response
+
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
 
         return response
     except Exception as e:
@@ -405,6 +450,8 @@ def get(
     extra_headers: dict[str, Any] | None = None,
     timeout: float | httpx.Timeout | None = None,
     custom_llm_provider: str | None = None,
+    stream: bool | None = None,
+    last_event_id: str | None = None,
     **kwargs,
 ) -> InteractionsAPIResponse | Coroutine[object, object, InteractionsAPIResponse]:
     """Sync: Get an interaction by its ID."""
@@ -429,11 +476,16 @@ def get(
             kwargs=kwargs,
             model=None,
             optional_params={"interaction_id": interaction_id},
-            litellm_params={"litellm_call_id": litellm_call_id},
+            litellm_params={
+                "litellm_call_id": litellm_call_id,
+                "defer_interaction_settlement": kwargs.get("defer_interaction_settlement", False),
+                "metadata": kwargs.get("litellm_metadata") or kwargs.get("metadata") or {},
+                "litellm_metadata": kwargs.get("litellm_metadata") or {},
+            },
             custom_llm_provider=custom_llm_provider,
         )
 
-        return interactions_http_handler.get_interaction(
+        response = interactions_http_handler.get_interaction(
             interaction_id=interaction_id,
             interactions_api_config=interactions_api_config,
             custom_llm_provider=custom_llm_provider,
@@ -442,7 +494,15 @@ def get(
             extra_headers=extra_headers,
             timeout=timeout,
             _is_async=_is_async,
+            stream=stream,
+            last_event_id=last_event_id,
         )
+        if isinstance(response, InteractionsAPIResponse):
+            from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
+
+            metadata = kwargs.get("litellm_metadata", {}) or {}
+            wrap_interaction_response_id(response, **interaction_id_context(metadata))
+        return response
     except Exception as e:
         raise litellm.exception_type(
             model=None,
@@ -516,6 +576,8 @@ def delete(
     custom_llm_provider = custom_llm_provider or "gemini"
 
     try:
+        if custom_llm_provider == "vertex_ai":
+            raise ValueError("Vertex AI Interactions does not document a delete operation")
         litellm_logging_obj: Final[LiteLLMLoggingObj] = kwargs.get("litellm_logging_obj")
         litellm_call_id: Final[str | None] = kwargs.get("litellm_call_id", None)
         _is_async: Final = kwargs.pop("adelete_interaction", False) is True
@@ -618,6 +680,15 @@ def cancel(
     custom_llm_provider = custom_llm_provider or "gemini"
 
     try:
+        if custom_llm_provider == "vertex_ai":
+            raise litellm.BadRequestError(
+                message=(
+                    "Vertex AI Gemini Omni Interactions does not support provider-side cancellation. "
+                    "Stopping client delivery does not stop generation or billing."
+                ),
+                model=None,
+                llm_provider="vertex_ai",
+            )
         litellm_logging_obj: Final[LiteLLMLoggingObj] = kwargs.get("litellm_logging_obj")
         litellm_call_id: Final[str | None] = kwargs.get("litellm_call_id", None)
         _is_async: Final = kwargs.pop("acancel_interaction", False) is True

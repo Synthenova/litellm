@@ -14,6 +14,7 @@ import httpx
 
 from litellm._logging import verbose_logger
 from litellm.constants import STREAM_SSE_DONE_STRING
+from litellm.interactions.id_utils import interaction_id_context, wrap_interaction_response_id
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.litellm_core_utils.core_helpers import process_response_headers
 from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -41,6 +42,9 @@ class BaseInteractionsAPIStreamingIterator:
         logging_obj: LiteLLMLoggingObj,
         litellm_metadata: dict[str, Any] | None = None,
         custom_llm_provider: str | None = None,
+        settle_on_terminal: bool = False,
+        generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
     ):
         self.response = response
         self.model = model
@@ -53,6 +57,9 @@ class BaseInteractionsAPIStreamingIterator:
         # set request kwargs
         self.litellm_metadata = litellm_metadata
         self.custom_llm_provider = custom_llm_provider
+        self.settle_on_terminal = settle_on_terminal
+        self.generation_owned_settlement = generation_owned_settlement
+        self.persist_generation_attribution = persist_generation_attribution
 
         # set hidden params for response headers
         _api_base: Final = get_api_base(
@@ -92,6 +99,9 @@ class BaseInteractionsAPIStreamingIterator:
                     parsed_chunk=parsed_chunk,
                     logging_obj=self.logging_obj,
                 )
+                id_context = interaction_id_context(self.litellm_metadata)
+                wrap_interaction_response_id(streaming_response, **id_context)
+                streaming_response._hidden_params.update(self._hidden_params)
 
                 # Store the completed response.
                 # Legacy schema signals completion via status="completed".
@@ -99,10 +109,16 @@ class BaseInteractionsAPIStreamingIterator:
                 # Remove the legacy check after June 8, 2026.
                 if streaming_response and (
                     getattr(streaming_response, "status", None) == "completed"
-                    or getattr(streaming_response, "event_type", None) == "interaction.completed"
+                    or getattr(streaming_response, "event_type", None)
+                    in {"interaction.completed", "interaction.complete"}
+                    and isinstance(getattr(streaming_response, "interaction", None), dict)
+                    and streaming_response.interaction.get("status") == "completed"
                 ):
+                    if self.settle_on_terminal and not self.generation_owned_settlement:
+                        streaming_response._hidden_params["settle_interaction_cost"] = True
                     self.completed_response = streaming_response
-                    self._handle_logging_completed_response()
+                    if self.settle_on_terminal and not self.generation_owned_settlement:
+                        self._handle_logging_completed_response()
 
                 return streaming_response
 
@@ -129,6 +145,9 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
         logging_obj: LiteLLMLoggingObj,
         litellm_metadata: dict[str, Any] | None = None,
         custom_llm_provider: str | None = None,
+        settle_on_terminal: bool = False,
+        generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
     ):
         super().__init__(
             response=response,
@@ -137,6 +156,9 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
             logging_obj=logging_obj,
             litellm_metadata=litellm_metadata,
             custom_llm_provider=custom_llm_provider,
+            settle_on_terminal=settle_on_terminal,
+            generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
         self.stream_iterator = response.aiter_lines()
 
@@ -158,6 +180,15 @@ class InteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator):
                 if self.finished:
                     raise StopAsyncIteration
                 elif result is not None:
+                    if self.generation_owned_settlement:
+                        from litellm.proxy.interactions.settlement import (
+                            observe_interaction_generation,
+                        )
+
+                        await observe_interaction_generation(
+                            result,
+                            self.litellm_metadata if self.persist_generation_attribution else None,
+                        )
                     return result
                 # If result is None, continue the loop to get the next chunk
 
@@ -196,6 +227,9 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
         logging_obj: LiteLLMLoggingObj,
         litellm_metadata: dict[str, Any] | None = None,
         custom_llm_provider: str | None = None,
+        settle_on_terminal: bool = False,
+        generation_owned_settlement: bool = False,
+        persist_generation_attribution: bool = False,
     ):
         super().__init__(
             response=response,
@@ -204,6 +238,9 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
             logging_obj=logging_obj,
             litellm_metadata=litellm_metadata,
             custom_llm_provider=custom_llm_provider,
+            settle_on_terminal=settle_on_terminal,
+            generation_owned_settlement=generation_owned_settlement,
+            persist_generation_attribution=persist_generation_attribution,
         )
         self.stream_iterator = response.iter_lines()
 
@@ -225,6 +262,16 @@ class SyncInteractionsAPIStreamingIterator(BaseInteractionsAPIStreamingIterator)
                 if self.finished:
                     raise StopIteration
                 elif result is not None:
+                    if self.generation_owned_settlement:
+                        from litellm.proxy.interactions.settlement import (
+                            observe_interaction_generation,
+                        )
+
+                        run_async_function(
+                            async_function=observe_interaction_generation,
+                            response=result,
+                            metadata=(self.litellm_metadata if self.persist_generation_attribution else None),
+                        )
                     return result
                 # If result is None, continue the loop to get the next chunk
 

@@ -12,6 +12,8 @@ from litellm.types.utils import LlmProviders
 
 VERTEX_INTERACTIONS_API_VERSION: Final = "v1beta1"
 VERTEX_INTERACTIONS_DEFAULT_LOCATION: Final = "global"
+# Infiknit: Vertex Omni returns the `steps` schema only when this revision is requested.
+VERTEX_INTERACTIONS_API_REVISION: Final = "2026-05-20"
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +96,7 @@ class VertexAIInteractionsConfig(VertexBase, GoogleAIStudioInteractionsConfig):
         return {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {access_token}",
+            "Api-Revision": VERTEX_INTERACTIONS_API_REVISION,
             **headers,
         }
 
