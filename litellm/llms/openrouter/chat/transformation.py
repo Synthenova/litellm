@@ -20,7 +20,7 @@ from litellm.types.llms.openrouter import OpenRouterErrorMessage
 from litellm.types.utils import ModelResponse, ModelResponseStream
 
 from ...openai.chat.gpt_transformation import OpenAIGPTConfig
-from ..common_utils import OpenRouterException
+from ..common_utils import OpenRouterException, openrouter_billed_cost
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
@@ -205,7 +205,7 @@ class OpenrouterConfig(OpenAIGPTConfig):
         try:
             response_json: Final = raw_response.json()
             if "usage" in response_json and response_json["usage"]:
-                response_cost: Final = response_json["usage"].get("cost")
+                response_cost: Final = openrouter_billed_cost(response_json["usage"])
                 if response_cost is not None:
                     # Store cost in hidden params for the cost calculator to use
                     if not hasattr(model_response, HIDDEN_PARAMS_ATTR):
@@ -245,6 +245,13 @@ class OpenrouterConfig(OpenAIGPTConfig):
         )
 
 
+def _with_billed_cost(usage: dict | None) -> dict | None:
+    billed: Final = openrouter_billed_cost(usage)
+    if usage is None or billed is None:
+        return usage
+    return {**usage, "cost": billed}
+
+
 class OpenRouterChatCompletionStreamingHandler(BaseModelResponseIterator):
     def chunk_parser(self, chunk: dict) -> ModelResponseStream:
         try:
@@ -274,7 +281,7 @@ class OpenRouterChatCompletionStreamingHandler(BaseModelResponseIterator):
                 id=chunk["id"],
                 object="chat.completion.chunk",
                 created=chunk["created"],
-                usage=chunk.get("usage"),
+                usage=_with_billed_cost(chunk.get("usage")),
                 model=chunk["model"],
                 choices=new_choices,
             )
