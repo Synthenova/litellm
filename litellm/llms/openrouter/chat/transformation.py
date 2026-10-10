@@ -214,6 +214,10 @@ class OpenrouterConfig(OpenAIGPTConfig):
             response_json: Final = raw_response.json()
             if "usage" in response_json and response_json["usage"]:
                 response_cost: Final = openrouter_billed_cost(response_json["usage"])
+                usage_obj: Final = getattr(model_response, "usage", None)
+                if usage_obj is not None and hasattr(usage_obj, "cost"):
+                    # An unknown charge must not reach the cost calculator as a provider-stated 0.
+                    usage_obj.cost = response_cost
                 if response_cost is not None:
                     # Store cost in hidden params for the cost calculator to use
                     if not hasattr(model_response, "_hidden_params"):
@@ -250,9 +254,12 @@ class OpenrouterConfig(OpenAIGPTConfig):
 
 
 def _with_billed_cost(usage: dict | None) -> dict | None:
-    billed: Final = openrouter_billed_cost(usage)
-    if usage is None or billed is None:
+    if not usage or "cost" not in usage:
         return usage
+    billed: Final = openrouter_billed_cost(usage)
+    if billed is None:
+        # Unknown charge: drop the fee-only/invalid cost so configured pricing applies.
+        return {key: value for key, value in usage.items() if key != "cost"}
     return {**usage, "cost": billed}
 
 
