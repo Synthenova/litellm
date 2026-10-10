@@ -11,7 +11,10 @@ class OpenRouterException(BaseLLMException):
 def _charge(value: object) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    amount = float(value)
+    try:
+        amount = float(value)
+    except OverflowError:
+        return None
     return amount if math.isfinite(amount) and amount >= 0 else None
 
 
@@ -31,4 +34,4 @@ def openrouter_billed_cost(usage: Mapping[str, object] | None) -> float | None:
         return fee
     details = usage.get("cost_details")
     upstream = _charge(details.get("upstream_inference_cost")) if isinstance(details, Mapping) else None
-    return None if upstream is None else fee + upstream
+    return None if upstream is None else _charge(fee + upstream)
