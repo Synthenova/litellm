@@ -164,3 +164,33 @@ def test_vertex_requests_select_the_steps_schema():
     headers = config.validate_environment({}, "gemini-omni-flash-preview", GenericLiteLLMParams())
     assert headers["Api-Revision"] == "2026-05-20"
     assert headers["Authorization"] == "Bearer token"
+
+
+@pytest.mark.parametrize(
+    ("usage", "expected"),
+    [
+        (None, None),
+        ({"cost": 0.0000038, "is_byok": False}, 0.0000038),
+        # BYOK: OpenRouter fee is 0, the provider bills the account key upstream.
+        ({"cost": 0, "is_byok": True, "cost_details": {"upstream_inference_cost": 0.0000036}}, 0.0000036),
+        ({"cost": 0.000001, "is_byok": True, "cost_details": {"upstream_inference_cost": 0.00002}}, 0.000021),
+        ({"cost": 0, "is_byok": True}, 0.0),
+        ({"is_byok": True, "cost_details": {"upstream_inference_cost": 0.1}}, None),
+    ],
+)
+def test_openrouter_billed_cost_includes_byok_upstream_charge(usage, expected):
+    from litellm.llms.openrouter.common_utils import openrouter_billed_cost
+
+    assert openrouter_billed_cost(usage) == (pytest.approx(expected) if expected is not None else None)
+
+
+def test_openrouter_stream_chunk_carries_billed_cost():
+    from litellm.llms.openrouter.chat.transformation import OpenRouterChatCompletionStreamingHandler
+
+    handler = OpenRouterChatCompletionStreamingHandler(streaming_response=iter(()), sync_stream=True)
+    chunk = handler.chunk_parser({
+        "id": "gen-1", "created": 1, "model": "~openai/gpt-luna-latest", "choices": [],
+        "usage": {"prompt_tokens": 11, "completion_tokens": 5, "total_tokens": 16, "cost": 0, "is_byok": True,
+                  "cost_details": {"upstream_inference_cost": 0.0000036}},
+    })
+    assert chunk.usage.cost == pytest.approx(0.0000036)
