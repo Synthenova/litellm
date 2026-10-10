@@ -164,3 +164,37 @@ def test_vertex_requests_select_the_steps_schema():
     headers = config.validate_environment({}, "gemini-omni-flash-preview", GenericLiteLLMParams())
     assert headers["Api-Revision"] == "2026-05-20"
     assert headers["Authorization"] == "Bearer token"
+
+
+@pytest.mark.parametrize("trusted", [True, False])
+def test_settlement_spend_log_keeps_the_hashed_key(trusted):
+    """Settlement replays the stored key hash; 1.104 re-hashes it unless it is marked trusted."""
+    import datetime as dt
+
+    from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLogging
+    from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+    from litellm.proxy.utils import hash_token
+
+    key_hash = hash_token("sk-infiknit-test-key")
+    metadata = {"user_api_key": key_hash, "user_api_key_user_id": "user-1", "model_group": "infiknit/vertex/gemini-omni"}
+    if trusted:
+        metadata["user_api_key_hash"] = key_hash  # what settlement.py now sends
+    logging_obj = LiteLLMLogging(
+        model="gemini-omni-flash-preview",
+        messages=[{"role": "user", "content": "<interaction>"}],
+        stream=False,
+        call_type="acreate_interaction",
+        start_time=dt.datetime.now(),
+        litellm_call_id="interaction:dep:v1",
+        function_id="interaction:dep:v1",
+    )
+    logging_obj.update_environment_variables(
+        litellm_params={"custom_llm_provider": "vertex_ai", "metadata": metadata}, optional_params={}
+    )
+    response = _completed()
+    response._hidden_params["settle_interaction_cost"] = True
+    start, end, response = logging_obj._success_handler_helper_fn(
+        result=response, start_time=dt.datetime.now(), end_time=dt.datetime.now(), cache_hit=False
+    )
+    payload = get_logging_payload(kwargs=logging_obj.model_call_details, response_obj=response, start_time=start, end_time=end)
+    assert (payload["api_key"] == key_hash) is trusted

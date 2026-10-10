@@ -157,6 +157,9 @@ async def settle_terminal_interaction_once(
             "custom_llm_provider": "vertex_ai",
             "metadata": {
                 "user_api_key": snapshot.get("api_key"),
+                # The snapshot holds the already-hashed key; marking it trusted stops the
+                # spend-log builder from hashing it again (which bills a key that doesn't exist).
+                "user_api_key_hash": snapshot.get("api_key"),
                 "user_api_key_user_id": snapshot.get("user_id"),
                 "user_api_key_team_id": snapshot.get("team_id"),
                 "user_api_key_org_id": snapshot.get("org_id"),
