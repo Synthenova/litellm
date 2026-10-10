@@ -56,6 +56,12 @@ def _byok(upstream: object, *, details: bool = True, fee: object = 0) -> dict:
         ({"cost": True, "is_byok": False}, None),
         ({"cost": -0.5, "is_byok": False}, None),
         ({"cost": math.inf}, None),
+        # Malformed magnitudes: overflow on conversion or on the fee + upstream total.
+        ({"cost": 10**400}, None),
+        (_byok(10**400), None),
+        (_byok(0.1, fee=10**400), None),
+        (_byok(1e308, fee=1e308), None),
+        ({"cost": 1e308, "is_byok": False}, 1e308),
     ],
 )
 def test_openrouter_billed_cost(usage, expected):
